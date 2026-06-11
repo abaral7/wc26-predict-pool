@@ -406,7 +406,8 @@ export default function WorldCupPool() {
         {tab === "standings" && <Standings calc={calc} config={config} />}
         {tab === "matches" && (
           <Matches data={data} calc={calc} isAdmin={isAdmin}
-            onEdit={(m) => setModal({ type: "match", payload: m })} />
+            onEdit={(m) => setModal({ type: "match", payload: m })}
+            onSavePredictions={(ptfId, preds) => save({ ...data, ptfPredictions: { ...(data.ptfPredictions || {}), [ptfId]: preds } })} />
         )}
         {tab === "money" && (
           <Money data={data} calc={calc} isAdmin={isAdmin}
@@ -457,6 +458,9 @@ export default function WorldCupPool() {
             save({ ...data, matches });
             setModal(null);
             flash(del ? "Match removed" : "Match saved — balances updated");
+          }}
+          onSavePredictions={(ptfId, preds) => {
+            save({ ...data, ptfPredictions: { ...(data.ptfPredictions || {}), [String(ptfId)]: preds } });
           }} />
       )}
       {modal?.type === "fixture" && (
@@ -542,8 +546,119 @@ function Standings({ calc, config }) {
   );
 }
 
+// Live score indicator — just the score badge, no predictions logic.
+function LiveScoreStrip({ liveData }) {
+  if (!liveData) return null;
+  return (
+    <div style={{ padding: "6px 12px", borderTop: "1px dashed var(--line)", display: "flex", gap: 8, alignItems: "center" }}>
+      <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--grass)" }}>
+        ⚡ Live
+      </span>
+      {liveData.homeScore !== null && !isNaN(liveData.homeScore) && (
+        <span className="mono" style={{ fontSize: 14, fontWeight: 700 }}>
+          {liveData.homeScore} – {liveData.awayScore}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAdmin, onEdit }) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const cached = cachedPredictions?.[String(match.ptfFixtureId)];
+
+  const fetchAndSave = async () => {
+    if (!match.ptfFixtureId || loading) return;
+    setLoading(true); setErr("");
+    try {
+      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(match.ptfFixtureId)}`);
+      const j = await r.json();
+      if (!r.ok) { setErr(j.error || "Failed"); return; }
+      onSavePredictions(String(match.ptfFixtureId), { ...j, fetchedAt: new Date().toISOString() });
+    } catch { setErr("Network error"); }
+    finally { setLoading(false); }
+  };
+
+  const scoreH = liveData?.homeScore ?? (match.played ? match.scoreHome : null);
+  const scoreA = liveData?.awayScore ?? (match.played ? match.scoreAway : null);
+
+  const winners = useMemo(() => {
+    if (!cached?.predictions?.length || scoreH == null || scoreA == null) return null;
+    const h = parseInt(scoreH, 10), a = parseInt(scoreA, 10);
+    if (isNaN(h) || isNaN(a)) return null;
+    return computeWinners(cached.predictions, h, a);
+  }, [cached, scoreH, scoreA]);
+
+  const showFooter = cached || err;
+
+  return (
+    <article className="match">
+      <div className="head">
+        <span className="chip">M{match.num}{match.group ? " · Grp " + match.group : ""}</span>
+        <span className="teams">{match.home} <span style={{ color: "var(--chalk-dim)" }}>vs</span> {match.away}</span>
+        {match.played ? <span className="score">{match.scoreHome} – {match.scoreAway}</span> : <span className="chip">{match.date || "Upcoming"}</span>}
+        {isAdmin && <button className="btn sm" onClick={() => onEdit(match)}>{match.played ? "Edit" : "Enter result"}</button>}
+        {isAdmin && match.ptfFixtureId && (
+          <button className="btn sm" onClick={fetchAndSave} disabled={loading}>
+            {loading ? "Fetching…" : "Fetch PTF"}
+          </button>
+        )}
+      </div>
+      {match.played && (
+        <div className="body">
+          <span className="chip gold" title={RULE_HELP[match.rule]}>{match.rule}</span>
+          {match._rollover ? (
+            <span className="chip">Pot {rs0(match._pot)} → league fund</span>
+          ) : (
+            <>
+              <span className="chip green">{match.winners.length} winner{match.winners.length > 1 ? "s" : ""} · {rs(match._share)} each</span>
+              {match.winners.map((w) => <span className="winner-tag" key={w}>{w}</span>)}
+            </>
+          )}
+        </div>
+      )}
+      <LiveScoreStrip liveData={liveData} />
+      {showFooter && (
+        <div style={{ padding: "6px 12px", borderTop: "1px dashed var(--line)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {cached?.fetchedAt && (
+            <span style={{ fontSize: 11, color: "var(--chalk-dim)" }}>{timeAgo(cached.fetchedAt)}</span>
+          )}
+          {err && <span style={{ fontSize: 11, color: "var(--loss)" }}>{err}</span>}
+          {winners ? (
+            <span className={"chip " + (winners.rule === 4 ? "" : "gold")}>
+              Rule {winners.rule}{winners.rule === 4 ? " — rollover" : winners.names.length ? ": " + winners.names.join(", ") : ""}
+            </span>
+          ) : cached?.predictions?.length > 0 && scoreH == null && (
+            <span style={{ fontSize: 11, color: "var(--chalk-dim)" }}>{cached.predictions.length} predictions — waiting for score</span>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
 /* ---------- Matches ---------- */
-function Matches({ data, calc, isAdmin, onEdit }) {
+function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
+  const [liveMap, setLiveMap] = useState({});
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/wc26/games");
+        if (!r.ok) return;
+        const { live } = await r.json();
+        const map = {};
+        (live || []).forEach((g) => { map[String(g.id)] = g; });
+        setLiveMap(map);
+      } catch { /* silent */ }
+    };
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const groups = { group: [], knockout: [] };
   [...data.matches].sort((a, b) => a.num - b.num).forEach((m) => groups[m.stage]?.push(m));
   const Section = ({ title, list, fee, pot }) => (
@@ -553,27 +668,9 @@ function Matches({ data, calc, isAdmin, onEdit }) {
       </h2>
       {list.length === 0 && <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No results entered yet.</p>}
       {list.map((m) => (
-        <article className="match" key={m.id}>
-          <div className="head">
-            <span className="chip">M{m.num}{m.group ? " · Grp " + m.group : ""}</span>
-            <span className="teams">{m.home} <span style={{ color: "var(--chalk-dim)" }}>vs</span> {m.away}</span>
-            {m.played ? <span className="score">{m.scoreHome} – {m.scoreAway}</span> : <span className="chip">{m.date || "Upcoming"}</span>}
-            {isAdmin && <button className="btn sm" onClick={() => onEdit(m)}>{m.played ? "Edit" : "Enter result"}</button>}
-          </div>
-          {m.played && (
-            <div className="body">
-              <span className="chip gold" title={RULE_HELP[m.rule]}>{m.rule}</span>
-              {m._rollover ? (
-                <span className="chip">Pot {rs0(m._pot)} → league fund</span>
-              ) : (
-                <>
-                  <span className="chip green">{m.winners.length} winner{m.winners.length > 1 ? "s" : ""} · {rs(m._share)} each</span>
-                  {m.winners.map((w) => <span className="winner-tag" key={w}>{w}</span>)}
-                </>
-              )}
-            </div>
-          )}
-        </article>
+        <MatchCard key={m.id} match={m} liveData={liveMap[String(m.num)]}
+          cachedPredictions={data.ptfPredictions} onSavePredictions={onSavePredictions}
+          isAdmin={isAdmin} onEdit={onEdit} />
       ))}
     </section>
   );
@@ -796,7 +893,7 @@ function PinModal({ onOk, onClose }) {
   );
 }
 
-function MatchEditor({ data, match, onClose, onSave }) {
+function MatchEditor({ data, match, onClose, onSave, onSavePredictions }) {
   const isNew = !match;
   const [m, setM] = useState(match || {
     id: "", num: 0, stage: "group", group: "",
@@ -886,8 +983,10 @@ function MatchEditor({ data, match, onClose, onSave }) {
                     {m.group ? <span className="chip" style={{ marginLeft: 8 }}>Grp {m.group}</span> : null}
                   </p>
                   <PtfPredictionsPanel fixture={m} eligible={eligible}
+                    cachedPredictions={data.ptfPredictions}
                     onApplyWinners={(names) => set("winners", names)}
-                    onApplyRule={(rule) => set("rule", rule)} />
+                    onApplyRule={(rule) => set("rule", rule)}
+                    onSavePredictions={onSavePredictions} />
                   <ResultFields />
                 </>
               )}
@@ -914,8 +1013,10 @@ function MatchEditor({ data, match, onClose, onSave }) {
             Result is in (uncheck to revert to upcoming)
           </label>
           <PtfPredictionsPanel fixture={m} eligible={eligible}
+            cachedPredictions={data.ptfPredictions}
             onApplyWinners={(names) => set("winners", names)}
-            onApplyRule={(rule) => set("rule", rule)} />
+            onApplyRule={(rule) => set("rule", rule)}
+            onSavePredictions={onSavePredictions} />
           {m.played && <ResultFields />}
         </>
       )}
@@ -1088,35 +1189,75 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
   );
 }
 
-function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule }) {
-  const [ptfId, setPtfId] = useState(fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : "");
-  const [result, setResult] = useState(null);
+function computeWinners(predictions, aH, aA) {
+  const exactScore  = predictions.filter(p => p.predHome === aH && p.predAway === aA);
+  const aGD         = aH - aA;
+  const correctGD   = predictions.filter(p => (p.predHome - p.predAway) === aGD);
+  const aResult     = Math.sign(aH - aA);
+  const correctTeam = predictions.filter(p => Math.sign(p.predHome - p.predAway) === aResult);
+  const isDraw      = aResult === 0;
+  const anyPredDraw = predictions.some(p => p.predHome === p.predAway);
+  if (exactScore.length)          return { rule: 1, names: exactScore.map(p => p.name) };
+  if (correctGD.length)           return { rule: 2, names: correctGD.map(p => p.name) };
+  if (correctTeam.length)         return { rule: 3, names: correctTeam.map(p => p.name) };
+  if (isDraw && !anyPredDraw)     return { rule: 4, names: [] };
+  return null;
+}
+
+function timeAgo(iso) {
+  if (!iso) return "";
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, cachedPredictions, onSavePredictions }) {
+  const initialId = fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : "";
+  const [ptfId, setPtfId] = useState(initialId);
+  const [result, setResult] = useState(() => (initialId && cachedPredictions?.[initialId]) || null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const initScore = (r) => ({ h: r?.actualHome != null ? String(r.actualHome) : "", a: r?.actualAway != null ? String(r.actualAway) : "" });
+  const [liveH, setLiveH] = useState(() => initScore((initialId && cachedPredictions?.[initialId]) || null).h);
+  const [liveA, setLiveA] = useState(() => initScore((initialId && cachedPredictions?.[initialId]) || null).a);
 
   const go = async () => {
     if (!ptfId || loading) return;
-    setLoading(true); setErr(""); setResult(null);
+    setLoading(true); setErr(""); setResult(null); setLiveH(""); setLiveA("");
     try {
       const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(ptfId)}`);
       const j = await r.json();
-      if (!r.ok) setErr(j.error || "Failed to fetch");
-      else setResult(j);
+      if (!r.ok) { setErr(j.error || "Failed to fetch"); return; }
+      const withTime = { ...j, fetchedAt: new Date().toISOString() };
+      setResult(withTime);
+      const s = initScore(withTime);
+      setLiveH(s.h); setLiveA(s.a);
+      onSavePredictions?.(ptfId, withTime);
     } catch { setErr("Network error"); }
     finally { setLoading(false); }
   };
 
+  const liveWinners = useMemo(() => {
+    if (!result?.predictions?.length || liveH === "" || liveA === "") return null;
+    const aH = parseInt(liveH, 10), aA = parseInt(liveA, 10);
+    if (isNaN(aH) || isNaN(aA)) return null;
+    return computeWinners(result.predictions, aH, aA);
+  }, [result, liveH, liveA]);
+
+  const activeWinners = liveWinners ?? result?.suggestedWinners ?? null;
+
   const applyAll = () => {
-    if (!result?.suggestedWinners) return;
-    const ptfNames = result.suggestedWinners.names;
+    if (!activeWinners) return;
     const matched = eligible.filter((p) =>
-      ptfNames.some((n) =>
+      activeWinners.names.some((n) =>
         n.toLowerCase().includes(p.name.toLowerCase()) ||
         p.name.toLowerCase().includes(n.toLowerCase())
       )
     ).map((p) => p.name);
     onApplyWinners(matched);
-    onApplyRule("Rule " + result.suggestedWinners.rule);
+    onApplyRule("Rule " + activeWinners.rule);
   };
 
   return (
@@ -1130,35 +1271,50 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule })
             onKeyDown={(e) => e.key === "Enter" && go()} />
         </div>
         <button className="btn sm" onClick={go} disabled={!ptfId || loading}
-          style={{ marginBottom: 1 }}>{loading ? "…" : "Fetch"}</button>
+          style={{ marginBottom: 1 }}>{loading ? "…" : result ? "Refresh" : "Fetch"}</button>
       </div>
       {err && <p style={{ color: "var(--loss)", fontSize: 13, marginTop: 6 }}>{err}</p>}
       {result && (
         <div style={{ marginTop: 10 }}>
           {result.matchTitle && (
-            <p style={{ fontSize: 13, marginBottom: 8 }}>
+            <p style={{ fontSize: 13, marginBottom: 4 }}>
               <b>{result.matchTitle}</b>
-              {result.actualScore && <span style={{ color: "var(--chalk-dim)" }}> · Actual: {result.actualScore}</span>}
+              {result.actualScore && <span style={{ color: "var(--chalk-dim)" }}> · Final: {result.actualScore}</span>}
             </p>
           )}
-          {result.suggestedWinners && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
-              <span className={"chip " + (result.suggestedWinners.rule === 4 ? "" : "gold")}>
-                {"Rule " + result.suggestedWinners.rule}
-                {result.suggestedWinners.rule === 4
-                  ? " — rollover"
-                  : result.suggestedWinners.names.length
-                    ? ": " + result.suggestedWinners.names.join(", ")
-                    : ""}
-              </span>
-              {result.suggestedWinners.rule !== 4 && result.suggestedWinners.names.length > 0 && (
-                <button className="btn sm" onClick={applyAll}>Apply winners + rule</button>
-              )}
-            </div>
+          {result.fetchedAt && (
+            <p style={{ fontSize: 11, color: "var(--chalk-dim)", marginBottom: 8 }}>
+              Cached {timeAgo(result.fetchedAt)}
+            </p>
           )}
+
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--chalk-dim)" }}>Live score</span>
+            <input type="number" min="0" value={liveH} placeholder="H"
+              onChange={(e) => setLiveH(e.target.value)}
+              style={{ width: 52, padding: "5px 8px", fontSize: 14, textAlign: "center" }} />
+            <span style={{ color: "var(--chalk-dim)", fontWeight: 700 }}>–</span>
+            <input type="number" min="0" value={liveA} placeholder="A"
+              onChange={(e) => setLiveA(e.target.value)}
+              style={{ width: 52, padding: "5px 8px", fontSize: 14, textAlign: "center" }} />
+            {liveWinners && (
+              <span className={"chip " + (liveWinners.rule === 4 ? "" : "gold")} style={{ marginLeft: 4 }}>
+                Rule {liveWinners.rule}{liveWinners.rule === 4 ? " — rollover" : liveWinners.names.length ? ": " + liveWinners.names.join(", ") : ""}
+              </span>
+            )}
+            {!liveWinners && result.suggestedWinners && (
+              <span className={"chip " + (result.suggestedWinners.rule === 4 ? "" : "gold")} style={{ marginLeft: 4 }}>
+                Rule {result.suggestedWinners.rule}{result.suggestedWinners.rule === 4 ? " — rollover" : result.suggestedWinners.names.length ? ": " + result.suggestedWinners.names.join(", ") : ""}
+              </span>
+            )}
+            {activeWinners && activeWinners.rule !== 4 && activeWinners.names.length > 0 && (
+              <button className="btn sm" onClick={applyAll}>Apply</button>
+            )}
+          </div>
+
           <div style={{ maxHeight: 160, overflowY: "auto" }}>
             {result.predictions.map((p, i) => {
-              const isWinner = result.suggestedWinners?.names?.includes(p.name);
+              const isWinner = activeWinners?.names?.includes(p.name);
               return (
                 <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0", borderBottom: "1px solid rgba(244,247,240,0.06)", fontSize: 13 }}>
                   <span style={{ flex: 1, color: isWinner ? "var(--gold)" : undefined }}>{p.name}</span>
@@ -1184,6 +1340,10 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
   const [ptfSession, setPtfSession] = useState("");
   const [ptfCsrf, setPtfCsrf] = useState("");
   const [ptfStatus, setPtfStatus] = useState(""); // "" | "saving" | "saved" | "error"
+  const [wc26Email, setWc26Email] = useState("");
+  const [wc26Pass, setWc26Pass] = useState("");
+  const [wc26Status, setWc26Status] = useState(""); // "" | "connecting" | "connected" | "error"
+  const [wc26Error, setWc26Error] = useState("");
 
   useEffect(() => {
     fetch("/api/admin/ptf-credentials", { headers: { "x-admin-pin": adminPin } })
@@ -1191,6 +1351,26 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
       .then((d) => { if (d) { setPtfSession(d.session); setPtfCsrf(d.csrf); } })
       .catch(() => {});
   }, [adminPin]);
+
+  const connectWc26 = async () => {
+    setWc26Status("connecting");
+    setWc26Error("");
+    try {
+      const r = await fetch("/api/wc26/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-pin": adminPin },
+        body: JSON.stringify({ email: wc26Email, password: wc26Pass }),
+      });
+      if (r.ok) {
+        setWc26Status("connected");
+        setWc26Pass("");
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setWc26Error(d.error || "Connection failed");
+        setWc26Status("error");
+      }
+    } catch { setWc26Status("error"); setWc26Error("Network error"); }
+  };
 
   const savePtf = async () => {
     setPtfStatus("saving");
@@ -1237,6 +1417,26 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
           <button className="btn" disabled={ptfStatus === "saving"} onClick={savePtf}>
             {ptfStatus === "saving" ? "Saving…" : ptfStatus === "saved" ? "✓ Saved" : ptfStatus === "error" ? "Error — retry" : "Save PTF credentials"}
           </button>
+        </div>
+      </div>
+      <div style={{ marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>Live Scores (worldcup26.ir)</div>
+        <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginBottom: 8, lineHeight: 1.5 }}>
+          Create a free account on <b style={{ color: "var(--chalk)" }}>worldcup26.ir</b> and connect here.
+          The token is valid for ~84 days — reconnect when it expires.
+        </p>
+        <label className="f">Email</label>
+        <input type="email" value={wc26Email} onChange={(e) => setWc26Email(e.target.value)} placeholder="your@email.com" />
+        <label className="f">Password</label>
+        <input type="password" value={wc26Pass} onChange={(e) => setWc26Pass(e.target.value)} placeholder="Password" />
+        {wc26Error && <p style={{ color: "#f87171", fontSize: 12, marginTop: 4 }}>{wc26Error}</p>}
+        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="btn" disabled={wc26Status === "connecting" || !wc26Email || !wc26Pass} onClick={connectWc26}>
+            {wc26Status === "connecting" ? "Connecting…" : wc26Status === "connected" ? "✓ Connected" : "Connect"}
+          </button>
+          {wc26Status === "connected" && (
+            <span style={{ fontSize: 12, color: "var(--chalk-dim)" }}>Token saved — ⚡ Live button is now active</span>
+          )}
         </div>
       </div>
       <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 14 }}>
