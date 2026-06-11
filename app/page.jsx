@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { makeGroupStageMatches } from "@/lib/fixtures";
 
 /* ============================================================
@@ -396,7 +396,7 @@ export default function WorldCupPool() {
           </div>
         </div>
         <nav className="tabs" aria-label="Sections">
-          {[["standings", "Standings"], ["matches", "Matches"], ["money", "Money"], ["rules", "Rules"]].map(([k, label]) => (
+          {[["standings", "Standings"], ["matches", "Matches"], ["money", "Money"], ["rules", "Rules"], ...(isAdmin ? [["fixtures", "Fixtures"]] : [])].map(([k, label]) => (
             <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
           ))}
         </nav>
@@ -417,6 +417,19 @@ export default function WorldCupPool() {
             }} />
         )}
         {tab === "rules" && <RulesView config={config} calc={calc} />}
+        {tab === "fixtures" && isAdmin && (
+          <FixturesTab data={data}
+            onAdd={() => setModal({ type: "fixture", payload: null })}
+            onEdit={(f) => setModal({ type: "fixture", payload: f })}
+            onImport={() => {
+              const existing = new Set(data.matches.map((m) => m.stage + ":" + m.num));
+              const fresh = makeGroupStageMatches().filter((m) => !existing.has(m.stage + ":" + m.num));
+              if (!fresh.length) { flash("All 72 group fixtures already imported"); return; }
+              save({ ...data, matches: [...data.matches, ...fresh] });
+              flash(`${fresh.length} fixtures imported`);
+            }}
+          />
+        )}
       </main>
 
       {isAdmin && (
@@ -446,8 +459,23 @@ export default function WorldCupPool() {
             flash(del ? "Match removed" : "Match saved — balances updated");
           }} />
       )}
+      {modal?.type === "fixture" && (
+        <FixtureEditor data={data} fixture={modal.payload}
+          onClose={() => setModal(null)}
+          onSave={(f, del) => {
+            let matches = [...data.matches];
+            if (del) matches = matches.filter((x) => x.id !== f.id);
+            else {
+              const i = matches.findIndex((x) => x.id === f.id);
+              if (i >= 0) matches[i] = f; else matches.push(f);
+            }
+            save({ ...data, matches });
+            setModal(null);
+            flash(del ? "Fixture removed" : "Fixture saved");
+          }} />
+      )}
       {modal?.type === "settings" && (
-        <SettingsModal data={data}
+        <SettingsModal data={data} adminPin={adminPin}
           onClose={() => setModal(null)}
           onSave={(next) => { save(next); setModal(null); flash("Settings saved"); }} />
       )}
@@ -456,7 +484,7 @@ export default function WorldCupPool() {
           onClose={() => setModal(null)}
           onSave={(participants, payments) => {
             save({ ...data, participants, payments });
-            setModal(null); flash("Participants updated");
+            flash("Participants updated");
           }} />
       )}
     </Shell>
@@ -554,6 +582,88 @@ function Matches({ data, calc, isAdmin, onEdit }) {
       <Section title="Group stage" list={groups.group} fee={data.config.groupFee} pot={calc.groupPot} />
       <Section title="Knockout stage" list={groups.knockout} fee={data.config.knockoutFee} pot={calc.koPot} />
     </>
+  );
+}
+
+/* ---------- Fixtures (admin) ---------- */
+function FixturesTab({ data, onAdd, onEdit, onImport }) {
+  const fixtures = [...data.matches].filter((x) => !x.played).sort((a, b) => a.num - b.num);
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <button className="btn primary" onClick={onAdd}>+ Add fixture</button>
+        <button className="btn" onClick={onImport}>Import 72 group fixtures</button>
+      </div>
+      {fixtures.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No upcoming fixtures. Add them individually or import the group stage above.</p>
+      ) : (
+        <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+          <table>
+            <thead><tr>
+              <th>#</th><th>Stage</th><th>Grp</th><th>Date</th><th>Home</th><th>Away</th><th></th>
+            </tr></thead>
+            <tbody>
+              {fixtures.map((f) => (
+                <tr key={f.id}>
+                  <td className="mono">{f.num}</td>
+                  <td><span className="chip">{f.stage === "group" ? "Grp" : "KO"}</span></td>
+                  <td style={{ color: "var(--chalk-dim)" }}>{f.group || "—"}</td>
+                  <td style={{ fontSize: 12, color: "var(--chalk-dim)" }}>{f.date || "—"}</td>
+                  <td style={{ fontWeight: 600 }}>{f.home}</td>
+                  <td style={{ fontWeight: 600 }}>{f.away}</td>
+                  <td><button className="btn sm" onClick={() => onEdit(f)}>Edit</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function FixtureEditor({ data, fixture, onClose, onSave }) {
+  const isNew = !fixture;
+  const nextNum = data.matches.length ? Math.max(...data.matches.map((m) => m.num)) + 1 : 1;
+  const [f, setF] = useState(fixture || {
+    id: "fx" + Date.now(), num: nextNum, stage: "group",
+    group: "", date: "", home: "", away: "",
+    played: false, scoreHome: "", scoreAway: "", rule: "Rule 1", winners: [],
+  });
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const valid = f.home.trim() && f.away.trim();
+  return (
+    <Modal title={isNew ? "Add fixture" : `Edit M${f.num}`} onClose={onClose}>
+      <div className="grid2">
+        <div><label className="f">Match #</label>
+          <input type="number" value={f.num} onChange={(e) => set("num", +e.target.value || 0)} /></div>
+        <div><label className="f">Stage</label>
+          <select value={f.stage} onChange={(e) => set("stage", e.target.value)}>
+            <option value="group">Group</option>
+            <option value="knockout">Knockout</option>
+          </select></div>
+      </div>
+      <div className="grid2">
+        <div><label className="f">Group</label>
+          <input value={f.group} onChange={(e) => set("group", e.target.value)} placeholder="A – L" /></div>
+        <div><label className="f">Date</label>
+          <input value={f.date} onChange={(e) => set("date", e.target.value)} placeholder="Jun 11, 2026" /></div>
+      </div>
+      <div className="grid2">
+        <div><label className="f">Home team</label>
+          <input value={f.home} onChange={(e) => set("home", e.target.value)} placeholder="e.g. Brazil" /></div>
+        <div><label className="f">Away team</label>
+          <input value={f.away} onChange={(e) => set("away", e.target.value)} placeholder="e.g. Japan" /></div>
+      </div>
+      <div><label className="f">PTF Fixture ID <span style={{ color: "var(--chalk-dim)", textTransform: "none", letterSpacing: 0 }}>(optional — from predictthefootball.com)</span></label>
+        <input type="number" min="1" value={f.ptfFixtureId ?? ""} placeholder="e.g. 5"
+          onChange={(e) => set("ptfFixtureId", e.target.value ? +e.target.value : undefined)} /></div>
+      <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="btn primary" disabled={!valid} style={!valid ? { opacity: 0.5 } : {}}
+          onClick={() => onSave(f, false)}>Save fixture</button>
+        {!isNew && <button className="btn danger" onClick={() => onSave(f, true)}>Delete fixture</button>}
+      </div>
+    </Modal>
   );
 }
 
@@ -688,13 +798,23 @@ function PinModal({ onOk, onClose }) {
 
 function MatchEditor({ data, match, onClose, onSave }) {
   const isNew = !match;
-  const nextNum = data.matches.length ? Math.max(...data.matches.map((m) => m.num)) + 1 : 1;
   const [m, setM] = useState(match || {
-    id: "m" + Date.now(), num: nextNum, stage: "group",
+    id: "", num: 0, stage: "group", group: "",
     home: "", away: "", played: true, scoreHome: "", scoreAway: "",
     rule: "Rule 1", winners: [],
   });
   const set = (k, v) => setM((x) => ({ ...x, [k]: v }));
+
+  const unplayed = isNew
+    ? [...data.matches].filter((x) => !x.played).sort((a, b) => a.num - b.num)
+    : [];
+
+  const pickFixture = (id) => {
+    const f = data.matches.find((x) => x.id === id);
+    if (!f) { setM((prev) => ({ ...prev, id: "", num: 0, home: "", away: "", group: "", stage: "group" })); return; }
+    setM((prev) => ({ ...prev, id: f.id, num: f.num, stage: f.stage, home: f.home, away: f.away, group: f.group ?? "", ptfFixtureId: f.ptfFixtureId }));
+  };
+
   const toggleWinner = (name) =>
     set("winners", m.winners.includes(name) ? m.winners.filter((x) => x !== name) : [...m.winners, name]);
 
@@ -702,67 +822,125 @@ function MatchEditor({ data, match, onClose, onSave }) {
   const cleanWinners = m.winners.filter((w) => eligible.some((p) => p.name === w));
   const pot = eligible.length * (m.stage === "group" ? data.config.groupFee : data.config.knockoutFee);
   const rollover = m.rule === "Rule 4" || cleanWinners.length === 0;
-  const valid = m.home.trim() && m.away.trim() && (!m.played || (m.scoreHome !== "" && m.scoreAway !== ""));
+  const valid = isNew
+    ? !!(m.id && m.scoreHome !== "" && m.scoreAway !== "")
+    : !!(m.home.trim() && m.away.trim() && (!m.played || (m.scoreHome !== "" && m.scoreAway !== "")));
+
+  const ResultFields = () => (
+    <>
+      <div className="grid2">
+        <div><label className="f">Score — {m.home || "home"}</label>
+          <input type="number" min="0" value={m.scoreHome} onChange={(e) => set("scoreHome", e.target.value)} /></div>
+        <div><label className="f">Score — {m.away || "away"}</label>
+          <input type="number" min="0" value={m.scoreAway} onChange={(e) => set("scoreAway", e.target.value)} /></div>
+      </div>
+      <label className="f">Rule decider</label>
+      <select value={m.rule} onChange={(e) => set("rule", e.target.value)}>
+        {RULES.map((r) => <option key={r} value={r}>{r} — {RULE_HELP[r]}</option>)}
+      </select>
+      {m.rule !== "Rule 4" && (
+        <>
+          <label className="f">Winners — only {m.stage === "group" ? "group-stage" : "knockout"} players listed ({eligible.length})</label>
+          <div className="winnergrid">
+            {eligible.map((p) => (
+              <label key={p.name}>
+                <input type="checkbox" checked={m.winners.includes(p.name)} onChange={() => toggleWinner(p.name)} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+      <p style={{ marginTop: 10, fontSize: 13, color: "var(--chalk-dim)" }}>
+        Pot: <b className="mono" style={{ color: "var(--gold)" }}>{rs0(pot)}</b>
+        {rollover
+          ? " → rolls over to the league fund (no winners)"
+          : <> ÷ {cleanWinners.length} = <b className="mono" style={{ color: "var(--grass)" }}>{rs(pot / cleanWinners.length)}</b> each</>}
+      </p>
+    </>
+  );
 
   return (
-    <Modal title={isNew ? "Add match result" : `Edit match ${m.num}`} onClose={onClose}>
-      <div className="grid2">
-        <div><label className="f">Match #</label>
-          <input type="number" value={m.num} onChange={(e) => set("num", +e.target.value || 0)} /></div>
-        <div><label className="f">Stage</label>
-          <select value={m.stage} onChange={(e) => set("stage", e.target.value)}>
-            <option value="group">Group (Rs {data.config.groupFee})</option>
-            <option value="knockout">Knockout (Rs {data.config.knockoutFee})</option>
-          </select></div>
-      </div>
-      <div className="grid2">
-        <div><label className="f">Home team</label><input value={m.home} onChange={(e) => set("home", e.target.value)} placeholder="e.g. Brazil" /></div>
-        <div><label className="f">Away team</label><input value={m.away} onChange={(e) => set("away", e.target.value)} placeholder="e.g. Japan" /></div>
-      </div>
-      <label className="f" style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontSize: 13, letterSpacing: 0 }}>
-        <input type="checkbox" style={{ width: "auto" }} checked={m.played} onChange={(e) => set("played", e.target.checked)} />
-        Result is in (uncheck to list as upcoming)
-      </label>
-      {m.played && (
+    <Modal title={isNew ? "Add match result" : `Edit M${m.num} result`} onClose={onClose}>
+      {isNew ? (
         <>
-          <div className="grid2">
-            <div><label className="f">Score — {m.home || "home"}</label>
-              <input type="number" min="0" value={m.scoreHome} onChange={(e) => set("scoreHome", e.target.value)} /></div>
-            <div><label className="f">Score — {m.away || "away"}</label>
-              <input type="number" min="0" value={m.scoreAway} onChange={(e) => set("scoreAway", e.target.value)} /></div>
-          </div>
-          <label className="f">Rule decider</label>
-          <select value={m.rule} onChange={(e) => set("rule", e.target.value)}>
-            {RULES.map((r) => <option key={r} value={r}>{r} — {RULE_HELP[r]}</option>)}
-          </select>
-          {m.rule !== "Rule 4" && (
+          {unplayed.length === 0 ? (
+            <p style={{ color: "var(--chalk-dim)", fontSize: 13, margin: "6px 0 12px" }}>
+              No upcoming fixtures — add them in the <b style={{ color: "var(--chalk)" }}>Fixtures</b> tab first.
+            </p>
+          ) : (
             <>
-              <label className="f">Winners — only {m.stage === "group" ? "group-stage" : "knockout"} players listed ({eligible.length})</label>
-              <div className="winnergrid">
-                {eligible.map((p) => (
-                  <label key={p.name}>
-                    <input type="checkbox" checked={m.winners.includes(p.name)} onChange={() => toggleWinner(p.name)} />
-                    {p.name}
-                  </label>
+              <label className="f">Fixture</label>
+              <select value={m.id} onChange={(e) => pickFixture(e.target.value)}>
+                <option value="">— select an upcoming fixture —</option>
+                {unplayed.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    M{f.num} · {f.home} vs {f.away}{f.group ? ` · Grp ${f.group}` : ""}
+                  </option>
                 ))}
-              </div>
+              </select>
+              {m.id && (
+                <>
+                  <p style={{ margin: "10px 0 2px", fontWeight: 700, fontStretch: "85%", fontSize: 15 }}>
+                    {m.home} <span style={{ color: "var(--chalk-dim)", fontWeight: 400 }}>vs</span> {m.away}
+                    {m.group ? <span className="chip" style={{ marginLeft: 8 }}>Grp {m.group}</span> : null}
+                  </p>
+                  <PtfPredictionsPanel fixture={m} eligible={eligible}
+                    onApplyWinners={(names) => set("winners", names)}
+                    onApplyRule={(rule) => set("rule", rule)} />
+                  <ResultFields />
+                </>
+              )}
             </>
           )}
-          <p style={{ marginTop: 10, fontSize: 13, color: "var(--chalk-dim)" }}>
-            Pot: <b className="mono" style={{ color: "var(--gold)" }}>{rs0(pot)}</b>
-            {rollover
-              ? " → rolls over to the league fund (no winners)"
-              : <> ÷ {cleanWinners.length} = <b className="mono" style={{ color: "var(--grass)" }}>{rs(pot / cleanWinners.length)}</b> each</>}
-          </p>
+        </>
+      ) : (
+        <>
+          <div className="grid2">
+            <div><label className="f">Match #</label>
+              <input type="number" value={m.num} onChange={(e) => set("num", +e.target.value || 0)} /></div>
+            <div><label className="f">Stage</label>
+              <select value={m.stage} onChange={(e) => set("stage", e.target.value)}>
+                <option value="group">Group (Rs {data.config.groupFee})</option>
+                <option value="knockout">Knockout (Rs {data.config.knockoutFee})</option>
+              </select></div>
+          </div>
+          <div className="grid2">
+            <div><label className="f">Home team</label><input value={m.home} onChange={(e) => set("home", e.target.value)} placeholder="e.g. Brazil" /></div>
+            <div><label className="f">Away team</label><input value={m.away} onChange={(e) => set("away", e.target.value)} placeholder="e.g. Japan" /></div>
+          </div>
+          <label className="f" style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontSize: 13, letterSpacing: 0 }}>
+            <input type="checkbox" style={{ width: "auto" }} checked={m.played} onChange={(e) => set("played", e.target.checked)} />
+            Result is in (uncheck to revert to upcoming)
+          </label>
+          <PtfPredictionsPanel fixture={m} eligible={eligible}
+            onApplyWinners={(names) => set("winners", names)}
+            onApplyRule={(rule) => set("rule", rule)} />
+          {m.played && <ResultFields />}
         </>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
         <button className="btn primary" disabled={!valid} style={!valid ? { opacity: 0.5 } : {}}
-          onClick={() => onSave({ ...m, winners: cleanWinners }, false)}>Save match</button>
+          onClick={() => onSave({ ...m, played: true, winners: cleanWinners }, false)}>Save result</button>
         {!isNew && <button className="btn danger" onClick={() => onSave(m, true)}>Delete</button>}
       </div>
     </Modal>
   );
+}
+
+function parseParticipantsCsv(text) {
+  const SKIP = new Set(["full name", "name", "fullname", "entry_type", "enrollment"]);
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.split(",").map((s) => s.trim()))
+    .filter((cols) => cols[0] && !SKIP.has(cols[0].toLowerCase()))
+    .map((cols) => {
+      const name = cols[0];
+      const raw = (cols[1] || "full").toLowerCase().replace(/[^a-z]/g, "");
+      const type = raw === "knockout" || raw === "ko" ? "knockout" : raw === "group" ? "group" : "full";
+      const paid = (cols[2] || "").toLowerCase().trim() === "paid";
+      return { name, type, paid };
+    });
 }
 
 /* ---------- Participants manager (admin) ---------- */
@@ -772,6 +950,11 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState("full");
   const [removing, setRemoving] = useState(null);
+  const [importMsg, setImportMsg] = useState("");
+  const csvRef = useRef(null);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDir, setSortDir] = useState("asc");
 
   const hasWins = (name) =>
     data.matches.some((m) => (m.winners || []).includes(name));
@@ -786,6 +969,30 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
 
   const togglePaid = (name) =>
     setPayments((p) => ({ ...p, [name]: { ...(p[name] || {}), entryPaid: !p[name]?.entryPaid } }));
+
+  const handleCsvImport = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const rows = parseParticipantsCsv(ev.target.result);
+      if (!rows.length) { setImportMsg("No valid rows found"); return; }
+      let added = 0, updated = 0;
+      const nextList = [...list];
+      const nextPay = { ...payments };
+      rows.forEach(({ name, type, paid }) => {
+        const i = nextList.findIndex((p) => p.name.toLowerCase() === name.toLowerCase());
+        if (i >= 0) { nextList[i] = { ...nextList[i], type }; updated++; }
+        else { nextList.push({ name, type }); added++; }
+        nextPay[name] = { ...(nextPay[name] || {}), entryPaid: paid };
+      });
+      setList(nextList);
+      setPayments(nextPay);
+      setImportMsg(`${added} added, ${updated} updated`);
+      e.target.value = "";
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <Modal title="Participants" onClose={onClose}>
@@ -802,38 +1009,73 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
           </select>
         </div>
         <button className="btn primary" onClick={add}>Add</button>
+        <button className="btn sm" onClick={() => csvRef.current?.click()}>Import CSV</button>
+        <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleCsvImport} />
       </div>
+      <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 6, lineHeight: 1.6 }}>
+        CSV format: <span style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11 }}>Full Name, full|group|knockout, paid|unpaid</span>
+        {" "}— one row per person. Header row is skipped. Existing names are updated, new ones are added.
+      </p>
+      {importMsg && (
+        <p style={{ fontSize: 12, color: "var(--grass)", marginTop: 4 }}>{importMsg}</p>
+      )}
 
       <div style={{ marginTop: 14, fontSize: 12, color: "var(--chalk-dim)" }}>
         {list.length} participants · {list.filter(inGroup).length} group · {list.filter(inKO).length} knockout · {list.filter(inLeague).length} league. Entry due updates with type.
       </div>
 
-      <div style={{ marginTop: 6 }}>
-        {list.map((p, i) => (
-          <div className="prow" key={p.name}>
-            <span className="pname">{p.name}</span>
-            <select value={p.type}
-              onChange={(e) => {
-                const next = [...list]; next[i] = { ...p, type: e.target.value }; setList(next);
-              }}>
-              {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
-            </select>
-            <span className="mono" style={{ fontSize: 12, color: "var(--chalk-dim)", minWidth: 72, textAlign: "right" }}>
-              {rs0(entryFor(p, config))}
-            </span>
-            <button className="btn sm" style={payments[p.name]?.entryPaid ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
-              onClick={() => togglePaid(p.name)}>
-              {payments[p.name]?.entryPaid ? "✓ Paid" : "Unpaid"}
+      <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input value={search} placeholder="Search by name…"
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ flex: 1, minWidth: 140, padding: "7px 10px", fontSize: 13 }} />
+        {[["name","Name"],["type","Type"],["entry","Entry"],["paid","Paid"]].map(([k, label]) => {
+          const active = sortKey === k;
+          return (
+            <button key={k} className="btn sm"
+              style={active ? { borderColor: "var(--gold)", color: "var(--gold)" } : {}}
+              onClick={() => { if (active) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortKey(k); setSortDir("asc"); } }}>
+              {label}{active ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
             </button>
-            {removing === p.name ? (
-              <button className="btn sm danger" onClick={() => { setList(list.filter((x) => x.name !== p.name)); setRemoving(null); }}>
-                Confirm{hasWins(p.name) ? " (has wins!)" : ""}
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 6 }}>
+        {list
+          .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+          .sort((a, b) => {
+            let va, vb;
+            if (sortKey === "name")  { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+            else if (sortKey === "type")  { va = a.type; vb = b.type; }
+            else if (sortKey === "entry") { va = entryFor(a, config); vb = entryFor(b, config); }
+            else { va = payments[a.name]?.entryPaid ? 0 : 1; vb = payments[b.name]?.entryPaid ? 0 : 1; }
+            if (va < vb) return sortDir === "asc" ? -1 : 1;
+            if (va > vb) return sortDir === "asc" ? 1 : -1;
+            return 0;
+          })
+          .map((p) => (
+            <div className="prow" key={p.name}>
+              <span className="pname">{p.name}</span>
+              <select value={p.type}
+                onChange={(e) => setList(list.map((x) => x.name === p.name ? { ...x, type: e.target.value } : x))}>
+                {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+              </select>
+              <span className="mono" style={{ fontSize: 12, color: "var(--chalk-dim)", minWidth: 72, textAlign: "right" }}>
+                {rs0(entryFor(p, config))}
+              </span>
+              <button className="btn sm" style={payments[p.name]?.entryPaid ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
+                onClick={() => togglePaid(p.name)}>
+                {payments[p.name]?.entryPaid ? "✓ Paid" : "Unpaid"}
               </button>
-            ) : (
-              <button className="btn sm danger" onClick={() => setRemoving(p.name)}>✕</button>
-            )}
-          </div>
-        ))}
+              {removing === p.name ? (
+                <button className="btn sm danger" onClick={() => { setList(list.filter((x) => x.name !== p.name)); setRemoving(null); }}>
+                  Confirm{hasWins(p.name) ? " (has wins!)" : ""}
+                </button>
+              ) : (
+                <button className="btn sm danger" onClick={() => setRemoving(p.name)}>✕</button>
+              )}
+            </div>
+          ))}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
@@ -846,14 +1088,123 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
   );
 }
 
-function SettingsModal({ data, onClose, onSave }) {
+function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule }) {
+  const [ptfId, setPtfId] = useState(fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : "");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const go = async () => {
+    if (!ptfId || loading) return;
+    setLoading(true); setErr(""); setResult(null);
+    try {
+      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(ptfId)}`);
+      const j = await r.json();
+      if (!r.ok) setErr(j.error || "Failed to fetch");
+      else setResult(j);
+    } catch { setErr("Network error"); }
+    finally { setLoading(false); }
+  };
+
+  const applyAll = () => {
+    if (!result?.suggestedWinners) return;
+    const ptfNames = result.suggestedWinners.names;
+    const matched = eligible.filter((p) =>
+      ptfNames.some((n) =>
+        n.toLowerCase().includes(p.name.toLowerCase()) ||
+        p.name.toLowerCase().includes(n.toLowerCase())
+      )
+    ).map((p) => p.name);
+    onApplyWinners(matched);
+    onApplyRule("Rule " + result.suggestedWinners.rule);
+  };
+
+  return (
+    <div style={{ margin: "12px 0", padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: 8, border: "1px solid var(--line)" }}>
+      <div className="eyebrow" style={{ marginBottom: 8 }}>PTF Predictions</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <div style={{ flex: 1 }}>
+          <label className="f">PTF fixture ID</label>
+          <input type="number" min="1" value={ptfId} placeholder="e.g. 5"
+            onChange={(e) => { setPtfId(e.target.value); setResult(null); setErr(""); }}
+            onKeyDown={(e) => e.key === "Enter" && go()} />
+        </div>
+        <button className="btn sm" onClick={go} disabled={!ptfId || loading}
+          style={{ marginBottom: 1 }}>{loading ? "…" : "Fetch"}</button>
+      </div>
+      {err && <p style={{ color: "var(--loss)", fontSize: 13, marginTop: 6 }}>{err}</p>}
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          {result.matchTitle && (
+            <p style={{ fontSize: 13, marginBottom: 8 }}>
+              <b>{result.matchTitle}</b>
+              {result.actualScore && <span style={{ color: "var(--chalk-dim)" }}> · Actual: {result.actualScore}</span>}
+            </p>
+          )}
+          {result.suggestedWinners && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+              <span className={"chip " + (result.suggestedWinners.rule === 4 ? "" : "gold")}>
+                {"Rule " + result.suggestedWinners.rule}
+                {result.suggestedWinners.rule === 4
+                  ? " — rollover"
+                  : result.suggestedWinners.names.length
+                    ? ": " + result.suggestedWinners.names.join(", ")
+                    : ""}
+              </span>
+              {result.suggestedWinners.rule !== 4 && result.suggestedWinners.names.length > 0 && (
+                <button className="btn sm" onClick={applyAll}>Apply winners + rule</button>
+              )}
+            </div>
+          )}
+          <div style={{ maxHeight: 160, overflowY: "auto" }}>
+            {result.predictions.map((p, i) => {
+              const isWinner = result.suggestedWinners?.names?.includes(p.name);
+              return (
+                <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0", borderBottom: "1px solid rgba(244,247,240,0.06)", fontSize: 13 }}>
+                  <span style={{ flex: 1, color: isWinner ? "var(--gold)" : undefined }}>{p.name}</span>
+                  <span className="mono" style={{ color: isWinner ? "var(--gold)" : "var(--chalk-dim)", fontSize: 12 }}>
+                    {p.predHome}–{p.predAway}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {!result.predictions.length && (
+            <p style={{ color: "var(--chalk-dim)", fontSize: 13 }}>No predictions found — check the fixture ID.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsModal({ data, onClose, onSave, adminPin }) {
   const [c, setC] = useState({ ...data.config });
   const set = (k, v) => setC((x) => ({ ...x, [k]: v }));
-  const importFixtures = () => {
-    const existing = new Set(data.matches.map((m) => m.stage + ":" + m.num));
-    const fresh = makeGroupStageMatches().filter((m) => !existing.has(m.stage + ":" + m.num));
-    onSave({ ...data, config: c, matches: [...data.matches, ...fresh] });
+  const [ptfSession, setPtfSession] = useState("");
+  const [ptfCsrf, setPtfCsrf] = useState("");
+  const [ptfStatus, setPtfStatus] = useState(""); // "" | "saving" | "saved" | "error"
+
+  useEffect(() => {
+    fetch("/api/admin/ptf-credentials", { headers: { "x-admin-pin": adminPin } })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) { setPtfSession(d.session); setPtfCsrf(d.csrf); } })
+      .catch(() => {});
+  }, [adminPin]);
+
+  const savePtf = async () => {
+    setPtfStatus("saving");
+    try {
+      const r = await fetch("/api/admin/ptf-credentials", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-admin-pin": adminPin },
+        body: JSON.stringify({ session: ptfSession, csrf: ptfCsrf }),
+      });
+      setPtfStatus(r.ok ? "saved" : "error");
+      setTimeout(() => setPtfStatus(""), 2000);
+    } catch { setPtfStatus("error"); }
   };
+
   return (
     <Modal title="Pool settings" onClose={onClose}>
       <label className="f">Pool name</label>
@@ -871,12 +1222,28 @@ function SettingsModal({ data, onClose, onSave }) {
         <input type="checkbox" style={{ width: "auto" }} checked={c.leagueFinalized} onChange={(e) => set("leagueFinalized", e.target.checked)} />
         Finalize league — award 50/30/20 prizes to the top 3 Full members
       </label>
-      <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 10 }}>
+      <div style={{ marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>PTF Integration</div>
+        <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginBottom: 8, lineHeight: 1.5 }}>
+          Log in to <b style={{ color: "var(--chalk)" }}>worldcup.predictthefootball.com</b>, open DevTools → Network,
+          click any /minileague request, and copy the cookie values below.
+          Sessions expire — re-paste after each login.
+        </p>
+        <label className="f">PHPSESSID</label>
+        <input value={ptfSession} onChange={(e) => setPtfSession(e.target.value)} placeholder="Paste PHPSESSID value" />
+        <label className="f">YII_CSRF_TOKEN</label>
+        <input value={ptfCsrf} onChange={(e) => setPtfCsrf(e.target.value)} placeholder="Paste YII_CSRF_TOKEN value" />
+        <div style={{ marginTop: 10 }}>
+          <button className="btn" disabled={ptfStatus === "saving"} onClick={savePtf}>
+            {ptfStatus === "saving" ? "Saving…" : ptfStatus === "saved" ? "✓ Saved" : ptfStatus === "error" ? "Error — retry" : "Save PTF credentials"}
+          </button>
+        </div>
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 14 }}>
         The admin PIN is set with the ADMIN_PIN environment variable on Vercel, not here.
       </p>
-      <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         <button className="btn primary" onClick={() => onSave({ ...data, config: c })}>Save settings</button>
-        <button className="btn" onClick={importFixtures}>Import 72 group fixtures</button>
       </div>
     </Modal>
   );
