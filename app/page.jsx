@@ -639,25 +639,53 @@ function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAd
   );
 }
 
+const SS_LIVE_KEY = "wc26_live_map";
+const SS_LIVE_TS_KEY = "wc26_live_ts";
+
 /* ---------- Matches ---------- */
 function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
-  const [liveMap, setLiveMap] = useState({});
+  const [liveMap, setLiveMap] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem(SS_LIVE_KEY) || "{}"); }
+    catch { return {}; }
+  });
+  const [lastFetchedAt, setLastFetchedAt] = useState(() => {
+    try { return parseInt(sessionStorage.getItem(SS_LIVE_TS_KEY) || "0", 10); }
+    catch { return 0; }
+  });
+  const [liveLoading, setLiveLoading] = useState(false);
 
-  useEffect(() => {
-    const poll = async () => {
+  const secondsSince = Math.floor((Date.now() - lastFetchedAt) / 1000);
+  const cooldownLeft = Math.max(0, 60 - secondsSince);
+
+  const fetchLive = async () => {
+    if (cooldownLeft > 0 || liveLoading) return;
+    setLiveLoading(true);
+    try {
+      const r = await fetch("/api/wc26/games");
+      if (!r.ok) return;
+      const { live } = await r.json();
+      const map = {};
+      (live || []).forEach((g) => { map[String(g.id)] = g; });
+      const ts = Date.now();
+      setLiveMap(map);
+      setLastFetchedAt(ts);
       try {
-        const r = await fetch("/api/wc26/games");
-        if (!r.ok) return;
-        const { live } = await r.json();
-        const map = {};
-        (live || []).forEach((g) => { map[String(g.id)] = g; });
-        setLiveMap(map);
-      } catch { /* silent */ }
-    };
-    poll();
-    const id = setInterval(poll, 60_000);
+        sessionStorage.setItem(SS_LIVE_KEY, JSON.stringify(map));
+        sessionStorage.setItem(SS_LIVE_TS_KEY, String(ts));
+      } catch {}
+    } catch { /* silent */ }
+    finally { setLiveLoading(false); }
+  };
+
+  // Tick every second while in cooldown so the countdown label updates live.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (cooldownLeft <= 0) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [cooldownLeft > 0]);
+
+  useEffect(() => { fetchLive(); }, []);
 
   const groups = { group: [], knockout: [] };
   [...data.matches].sort((a, b) => a.num - b.num).forEach((m) => groups[m.stage]?.push(m));
@@ -676,6 +704,11 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
   );
   return (
     <>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <button className="btn sm" onClick={fetchLive} disabled={liveLoading || cooldownLeft > 0}>
+          {liveLoading ? "Refreshing…" : cooldownLeft > 0 ? `Refresh in ${cooldownLeft}s` : "⚡ Refresh live scores"}
+        </button>
+      </div>
       <Section title="Group stage" list={groups.group} fee={data.config.groupFee} pot={calc.groupPot} />
       <Section title="Knockout stage" list={groups.knockout} fee={data.config.knockoutFee} pot={calc.koPot} />
     </>
@@ -921,7 +954,7 @@ function MatchEditor({ data, match, onClose, onSave, onSavePredictions }) {
   const rollover = m.rule === "Rule 4" || cleanWinners.length === 0;
   const valid = isNew
     ? !!(m.id && m.scoreHome !== "" && m.scoreAway !== "")
-    : !!(m.home.trim() && m.away.trim() && (!m.played || (m.scoreHome !== "" && m.scoreAway !== "")));
+    : true; // editing an existing match is always allowed
 
   const ResultFields = () => (
     <>
@@ -986,6 +1019,7 @@ function MatchEditor({ data, match, onClose, onSave, onSavePredictions }) {
                     cachedPredictions={data.ptfPredictions}
                     onApplyWinners={(names) => set("winners", names)}
                     onApplyRule={(rule) => set("rule", rule)}
+                    onApplyScore={(h, a) => { set("scoreHome", String(h)); set("scoreAway", String(a)); }}
                     onSavePredictions={onSavePredictions} />
                   <ResultFields />
                 </>
@@ -1016,14 +1050,17 @@ function MatchEditor({ data, match, onClose, onSave, onSavePredictions }) {
             cachedPredictions={data.ptfPredictions}
             onApplyWinners={(names) => set("winners", names)}
             onApplyRule={(rule) => set("rule", rule)}
+            onApplyScore={(h, a) => { set("scoreHome", String(h)); set("scoreAway", String(a)); }}
             onSavePredictions={onSavePredictions} />
           {m.played && <ResultFields />}
         </>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
         <button className="btn primary" disabled={!valid} style={!valid ? { opacity: 0.5 } : {}}
-          onClick={() => onSave({ ...m, played: true, winners: cleanWinners }, false)}>Save result</button>
-        {!isNew && <button className="btn danger" onClick={() => onSave(m, true)}>Delete</button>}
+          onClick={() => onSave({ ...m, played: true, winners: cleanWinners }, false)}>
+          {isNew ? "Save result" : "Verify result"}
+        </button>
+        <button className="btn" onClick={onClose}>Cancel</button>
       </div>
     </Modal>
   );
@@ -1213,8 +1250,8 @@ function timeAgo(iso) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, cachedPredictions, onSavePredictions }) {
-  const initialId = fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : "";
+function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, onApplyScore, cachedPredictions, onSavePredictions }) {
+  const initialId = fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : (fixture.num ? String(fixture.num) : "");
   const [ptfId, setPtfId] = useState(initialId);
   const [result, setResult] = useState(() => (initialId && cachedPredictions?.[initialId]) || null);
   const [loading, setLoading] = useState(false);
@@ -1235,6 +1272,26 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, c
       const s = initScore(withTime);
       setLiveH(s.h); setLiveA(s.a);
       onSavePredictions?.(ptfId, withTime);
+
+      // Auto-apply: compute winners from actual score (or suggestedWinners) and push to form
+      const scoreH = j.actualHome != null ? j.actualHome : null;
+      const scoreA = j.actualAway != null ? j.actualAway : null;
+      const winners = (scoreH !== null && scoreA !== null && j.predictions?.length)
+        ? computeWinners(j.predictions, scoreH, scoreA)
+        : j.suggestedWinners ?? null;
+      if (scoreH !== null && scoreA !== null && onApplyScore) onApplyScore(scoreH, scoreA);
+      if (winners && onApplyRule) {
+        onApplyRule("Rule " + winners.rule);
+        if (winners.rule !== 4 && onApplyWinners) {
+          const matched = eligible.filter((p) =>
+            winners.names.some((n) =>
+              n.toLowerCase().includes(p.name.toLowerCase()) ||
+              p.name.toLowerCase().includes(n.toLowerCase())
+            )
+          ).map((p) => p.name);
+          onApplyWinners(matched);
+        }
+      }
     } catch { setErr("Network error"); }
     finally { setLoading(false); }
   };
@@ -1248,17 +1305,6 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, c
 
   const activeWinners = liveWinners ?? result?.suggestedWinners ?? null;
 
-  const applyAll = () => {
-    if (!activeWinners) return;
-    const matched = eligible.filter((p) =>
-      activeWinners.names.some((n) =>
-        n.toLowerCase().includes(p.name.toLowerCase()) ||
-        p.name.toLowerCase().includes(n.toLowerCase())
-      )
-    ).map((p) => p.name);
-    onApplyWinners(matched);
-    onApplyRule("Rule " + activeWinners.rule);
-  };
 
   return (
     <div style={{ margin: "12px 0", padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: 8, border: "1px solid var(--line)" }}>
@@ -1306,9 +1352,6 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, c
               <span className={"chip " + (result.suggestedWinners.rule === 4 ? "" : "gold")} style={{ marginLeft: 4 }}>
                 Rule {result.suggestedWinners.rule}{result.suggestedWinners.rule === 4 ? " — rollover" : result.suggestedWinners.names.length ? ": " + result.suggestedWinners.names.join(", ") : ""}
               </span>
-            )}
-            {activeWinners && activeWinners.rule !== 4 && activeWinners.names.length > 0 && (
-              <button className="btn sm" onClick={applyAll}>Apply</button>
             )}
           </div>
 
