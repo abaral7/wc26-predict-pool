@@ -1,0 +1,868 @@
+"use client";
+
+import { useState, useEffect, useMemo } from "react";
+import { makeGroupStageMatches } from "@/lib/fixtures";
+
+/* ============================================================
+   WORLD CUP 2026 PREDICTION POOL — Next.js client UI
+   - Reads pool data from  GET /api/pool   (public, view-only)
+   - Writes go through     PUT /api/pool   (x-admin-pin header,
+     verified server-side against the ADMIN_PIN env var)
+   - Enrollment types: full | group | knockout
+   ============================================================ */
+
+const DEFAULT_CONFIG = {
+  poolName: "FIFA World Cup 2026 Pool",
+  groupFee: 50,
+  knockoutFee: 100,
+  leagueFee: 200,
+  groupMatchCount: 72,
+  knockoutMatchCount: 32,
+  leagueFinalized: false,
+};
+
+const TYPES = {
+  full: { label: "Full", short: "Full" },
+  group: { label: "Group stage only", short: "Group" },
+  knockout: { label: "Knockout only", short: "KO" },
+};
+const inGroup = (p) => p.type === "full" || p.type === "group";
+const inKO = (p) => p.type === "full" || p.type === "knockout";
+const inLeague = (p) => p.type === "full";
+
+const RULES = ["Rule 1", "Rule 2", "Rule 3", "Rule 4"];
+const RULE_HELP = {
+  "Rule 1": "Exact score matched",
+  "Rule 2": "Goal difference matched",
+  "Rule 3": "Winning team matched",
+  "Rule 4": "Draw, nobody predicted it — pot rolls to league fund",
+};
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  .wcp * { box-sizing: border-box; margin: 0; }
+  .wcp {
+    --pitch: #0c241a;
+    --pitch-2: #10301f;
+    --line: rgba(244, 247, 240, 0.14);
+    --chalk: #f4f7f0;
+    --chalk-dim: #9db3a4;
+    --gold: #e9c63f;
+    --grass: #54d98c;
+    --loss: #ef7a6d;
+    --card: #122b1e;
+    font-family: 'Archivo', system-ui, sans-serif;
+    background:
+      repeating-linear-gradient(90deg, transparent 0 120px, rgba(255,255,255,0.015) 120px 240px),
+      var(--pitch);
+    color: var(--chalk);
+    min-height: 100vh;
+  }
+  .wcp .mono { font-family: 'IBM Plex Mono', monospace; }
+  .wcp .disp { font-family: 'Archivo', sans-serif; font-stretch: 80%; font-weight: 800; letter-spacing: 0.01em; }
+
+  .wcp header.top {
+    border-bottom: 2px solid var(--line);
+    padding: 20px 18px 0;
+    position: sticky; top: 0; z-index: 30;
+    background: linear-gradient(var(--pitch) 70%, rgba(12,36,26,0.96));
+    backdrop-filter: blur(6px);
+  }
+  .wcp .eyebrow { font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--gold); font-weight: 600; }
+  .wcp h1 { font-stretch: 75%; font-weight: 900; font-size: clamp(22px, 5vw, 34px); text-transform: uppercase; line-height: 1.05; }
+  .wcp .tabs { display: flex; gap: 2px; margin-top: 14px; overflow-x: auto; }
+  .wcp .tabs button {
+    appearance: none; border: none; background: transparent; color: var(--chalk-dim);
+    font: 600 13px 'Archivo'; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 10px 14px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap;
+  }
+  .wcp .tabs button:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+  .wcp .tabs button.on { color: var(--chalk); border-bottom-color: var(--gold); }
+
+  .wcp main { max-width: 920px; margin: 0 auto; padding: 18px 14px 90px; }
+  .wcp .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .wcp .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .wcp .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 560px) { .wcp .grid3 { grid-template-columns: 1fr 1fr; } }
+
+  .wcp .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--chalk-dim); }
+  .wcp .stat .v { font-size: 20px; font-weight: 800; font-stretch: 80%; margin-top: 2px; }
+
+  .wcp table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .wcp th { text-align: left; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--chalk-dim); padding: 8px 8px; border-bottom: 1px solid var(--line); }
+  .wcp td { padding: 9px 8px; border-bottom: 1px solid rgba(244,247,240,0.06); }
+  .wcp .num { text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; }
+  .wcp .pos { color: var(--grass); }
+  .wcp .neg { color: var(--loss); }
+
+  .wcp .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); color: var(--chalk-dim); }
+  .wcp .chip.gold { color: var(--gold); border-color: rgba(233,198,63,0.5); }
+  .wcp .chip.green { color: var(--grass); border-color: rgba(84,217,140,0.45); }
+
+  .wcp .match { border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin-bottom: 10px; overflow: hidden; }
+  .wcp .match .head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
+  .wcp .match .score {
+    font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 16px;
+    background: #0a1d14; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; color: var(--gold);
+  }
+  .wcp .match .teams { font-weight: 700; font-stretch: 85%; font-size: 15px; flex: 1; min-width: 160px; }
+  .wcp .match .body { padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .wcp .winner-tag { background: rgba(84,217,140,0.1); border: 1px solid rgba(84,217,140,0.3); color: var(--grass); border-radius: 5px; padding: 2px 7px; font-size: 12px; }
+
+  .wcp button.btn {
+    appearance: none; cursor: pointer; border-radius: 8px; font: 700 13px 'Archivo'; letter-spacing: 0.04em;
+    padding: 10px 16px; border: 1px solid var(--line); background: var(--pitch-2); color: var(--chalk);
+  }
+  .wcp button.btn.primary { background: var(--gold); border-color: var(--gold); color: #1c1a0a; }
+  .wcp button.btn.danger { border-color: rgba(239,122,109,0.5); color: var(--loss); background: transparent; }
+  .wcp button.btn.sm { padding: 6px 10px; font-size: 12px; }
+  .wcp button.btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .wcp input, .wcp select, .wcp textarea {
+    width: 100%; background: #0a1d14; border: 1px solid var(--line); color: var(--chalk);
+    border-radius: 8px; padding: 10px 12px; font: 500 14px 'Archivo';
+  }
+  .wcp input:focus, .wcp select:focus, .wcp textarea:focus { outline: 2px solid var(--gold); outline-offset: -1px; }
+  .wcp label.f { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--chalk-dim); margin: 12px 0 5px; }
+
+  .wcp .overlay { position: fixed; inset: 0; background: rgba(4,12,8,0.78); z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
+  @media (min-width: 600px) { .wcp .overlay { align-items: center; } }
+  .wcp .sheet { background: var(--pitch-2); border: 1px solid var(--line); border-radius: 14px 14px 0 0; width: 100%; max-width: 620px; max-height: 88vh; overflow-y: auto; padding: 18px; }
+  @media (min-width: 600px) { .wcp .sheet { border-radius: 14px; } }
+
+  .wcp .adminbar {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+    background: rgba(10,29,20,0.97); border-top: 1px solid var(--gold);
+    display: flex; gap: 8px; padding: 10px 14px; justify-content: center; flex-wrap: wrap;
+  }
+  .wcp .winnergrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .wcp .winnergrid label { display: flex; gap: 7px; align-items: center; font-size: 13px; padding: 4px 2px; cursor: pointer; }
+  .wcp .winnergrid input { width: auto; }
+  .wcp .toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 99; background: var(--gold); color: #1c1a0a; font-weight: 700; font-size: 13px; padding: 9px 16px; border-radius: 999px; }
+  .wcp .medal { font-size: 15px; }
+  .wcp .rulecard { border-left: 3px solid var(--gold); padding: 10px 12px; background: var(--card); border-radius: 0 8px 8px 0; margin-bottom: 10px; font-size: 13.5px; line-height: 1.5; }
+  .wcp .rulecard b { color: var(--gold); }
+  .wcp .prow { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(244,247,240,0.07); flex-wrap: wrap; }
+  .wcp .prow .pname { flex: 1; min-width: 130px; font-weight: 600; font-size: 14px; }
+  .wcp .prow select { width: auto; padding: 6px 8px; font-size: 12.5px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .wcp .match, .wcp .card { transition: border-color .15s; }
+    .wcp .match:hover { border-color: rgba(233,198,63,0.4); }
+  }
+`;
+
+/* ---------- money helpers ---------- */
+const rs = (n) =>
+  "Rs " + (Math.round(n * 100) / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const rs0 = (n) => "Rs " + Math.round(n).toLocaleString("en-IN");
+
+/* ---------- entry fee for one participant ---------- */
+function entryFor(p, config) {
+  let t = 0;
+  if (inGroup(p)) t += config.groupFee * config.groupMatchCount;
+  if (inKO(p)) t += config.knockoutFee * config.knockoutMatchCount;
+  if (inLeague(p)) t += config.leagueFee;
+  return t;
+}
+
+/* ---------- core computation (the whole spreadsheet) ---------- */
+function compute(data) {
+  const { config, participants, matches, payments } = data;
+  const groupPlayers = participants.filter(inGroup);
+  const koPlayers = participants.filter(inKO);
+  const leaguePlayers = participants.filter(inLeague);
+
+  const potFor = (stage) =>
+    stage === "group"
+      ? groupPlayers.length * config.groupFee
+      : koPlayers.length * config.knockoutFee;
+
+  const stats = {};
+  participants.forEach((p) => {
+    stats[p.name] = {
+      name: p.name, type: p.type,
+      groupEarned: 0, koEarned: 0, wins: 0, maxWin: 0,
+      playedFees: 0, leagueReturn: 0,
+    };
+  });
+
+  let rollover = 0;
+  let playedCount = 0;
+
+  matches.forEach((m) => {
+    if (!m.played) return;
+    playedCount++;
+    const pot = potFor(m.stage);
+    const eligible = m.stage === "group" ? groupPlayers : koPlayers;
+    const winners = (m.winners || []).filter((w) => stats[w]);
+    const isRollover = m.rule === "Rule 4" || winners.length === 0;
+    const share = isRollover ? 0 : pot / winners.length;
+    m._pot = pot; m._share = share; m._rollover = isRollover;
+
+    if (isRollover) rollover += pot;
+    eligible.forEach((p) => {
+      const s = stats[p.name];
+      s.playedFees += m.stage === "group" ? config.groupFee : config.knockoutFee;
+      if (!isRollover && winners.includes(p.name)) {
+        if (m.stage === "group") s.groupEarned += share;
+        else s.koEarned += share;
+        s.wins += 1;
+        s.maxWin = Math.max(s.maxWin, share);
+      }
+    });
+  });
+
+  const leagueFund = leaguePlayers.length * config.leagueFee + rollover;
+  const leaguePrizes = [leagueFund * 0.5, leagueFund * 0.3, leagueFund * 0.2];
+
+  const rows = participants
+    .map((p) => {
+      const s = stats[p.name];
+      const earned = s.groupEarned + s.koEarned;
+      return { ...s, earned, netSoFar: earned - s.playedFees, entry: entryFor(p, config) };
+    })
+    .sort((a, b) => b.earned - a.earned || a.name.localeCompare(b.name));
+
+  const leagueRanked = rows.filter((r) => r.type === "full");
+  leagueRanked.forEach((r, i) => {
+    r.leagueRank = i + 1;
+    if (config.leagueFinalized && i < 3) r.leagueReturn = leaguePrizes[i];
+  });
+  rows.forEach((r, i) => {
+    r.rank = i + 1;
+    r.finalReturn = r.earned + r.leagueReturn;
+  });
+
+  const totalCollection = participants.reduce((a, p) => a + entryFor(p, config), 0);
+  const distributed = rows.reduce((a, r) => a + r.earned, 0);
+
+  return {
+    rows, rollover, leagueFund, leaguePrizes,
+    counts: { all: participants.length, group: groupPlayers.length, ko: koPlayers.length, league: leaguePlayers.length },
+    groupPot: groupPlayers.length * config.groupFee,
+    koPot: koPlayers.length * config.knockoutFee,
+    totalCollection, distributed, playedCount,
+    paidIn: participants.filter((p) => payments?.[p.name]?.entryPaid).length,
+    paidOut: participants.filter((p) => payments?.[p.name]?.payoutDone).length,
+  };
+}
+
+/* ---------- API helpers ---------- */
+async function apiGet() {
+  const r = await fetch("/api/pool", { cache: "no-store" });
+  if (!r.ok) throw new Error("load failed");
+  return (await r.json()).data;
+}
+async function apiPut(data, pin) {
+  const r = await fetch("/api/pool", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "x-admin-pin": pin },
+    body: JSON.stringify(data),
+  });
+  if (r.status === 401) throw new Error("unauthorized");
+  if (!r.ok) throw new Error("save failed");
+}
+async function apiVerify(pin) {
+  const r = await fetch("/api/admin/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin }),
+  });
+  return r.ok;
+}
+
+/* ============================================================ */
+export default function WorldCupPool() {
+  const [data, setData] = useState(null);
+  const [phase, setPhase] = useState("loading"); // loading | empty | main | error
+  const [tab, setTab] = useState("standings");
+  const [adminPin, setAdminPin] = useState(null); // held in memory only
+  const isAdmin = adminPin !== null;
+  const [modal, setModal] = useState(null);
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = await apiGet();
+        if (d) { setData(d); setPhase("main"); } else setPhase("empty");
+      } catch { setPhase("error"); }
+    })();
+  }, []);
+
+  const flash = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2200); };
+
+  const save = async (next) => {
+    const prev = data;
+    setData(next);
+    try { await apiPut(next, adminPin); }
+    catch (e) {
+      setData(prev);
+      flash(e.message === "unauthorized" ? "Session invalid — unlock admin again" : "Couldn't save — try again");
+      if (e.message === "unauthorized") setAdminPin(null);
+    }
+  };
+
+  const refresh = async () => {
+    try {
+      const d = await apiGet();
+      if (d) { setData(d); setPhase("main"); flash("Up to date"); }
+    } catch { flash("Couldn't refresh"); }
+  };
+
+  const calc = useMemo(() => (data ? compute(data) : null), [data]);
+
+  if (phase === "loading")
+    return <Shell><style>{css}</style><main><p style={{ color: "var(--chalk-dim)" }}>Loading the pool…</p></main></Shell>;
+
+  if (phase === "error")
+    return <Shell><style>{css}</style><main>
+      <p style={{ color: "var(--loss)" }}>Couldn't reach the database. Check the Upstash env vars on Vercel, then reload.</p>
+    </main></Shell>;
+
+  if (phase === "empty")
+    return <Shell><style>{css}</style>
+      {toast && <div className="toast" role="status">{toast}</div>}
+      {!isAdmin ? (
+        <main>
+          <div className="eyebrow" style={{ marginTop: 8 }}>USA · Canada · Mexico</div>
+          <h1 className="disp">World Cup 2026 Pool</h1>
+          <p style={{ color: "var(--chalk-dim)", margin: "12px 0 16px" }}>
+            The pool hasn't been set up yet. If you're the admin, unlock to create it.
+          </p>
+          <button className="btn primary" onClick={() => setModal({ type: "pin" })}>I'm the admin — set up</button>
+          {modal?.type === "pin" && (
+            <PinModal onClose={() => setModal(null)}
+              onOk={(pin) => { setAdminPin(pin); setModal(null); }} />
+          )}
+        </main>
+      ) : (
+        <SetupWizard onDone={async (d) => {
+          try { await apiPut(d, adminPin); setData(d); setPhase("main"); flash("Pool created"); }
+          catch { flash("Couldn't save — check env vars"); }
+        }} />
+      )}
+    </Shell>;
+
+  const { config } = data;
+
+  return (
+    <Shell>
+      <style>{css}</style>
+      {toast && <div className="toast" role="status">{toast}</div>}
+
+      <header className="top">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div>
+            <div className="eyebrow">USA · Canada · Mexico — 104 matches</div>
+            <h1 className="disp">{config.poolName}</h1>
+          </div>
+          <div style={{ display: "flex", gap: 6, paddingTop: 4 }}>
+            <button className="btn sm" onClick={refresh} title="Pull latest results">↻</button>
+            {isAdmin ? (
+              <button className="btn sm" onClick={() => { setAdminPin(null); flash("Back to view-only"); }}>Exit admin</button>
+            ) : (
+              <button className="btn sm" onClick={() => setModal({ type: "pin" })}>Admin</button>
+            )}
+          </div>
+        </div>
+        <nav className="tabs" aria-label="Sections">
+          {[["standings", "Standings"], ["matches", "Matches"], ["money", "Money"], ["rules", "Rules"]].map(([k, label]) => (
+            <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
+          ))}
+        </nav>
+      </header>
+
+      <main>
+        {tab === "standings" && <Standings calc={calc} config={config} />}
+        {tab === "matches" && (
+          <Matches data={data} calc={calc} isAdmin={isAdmin}
+            onEdit={(m) => setModal({ type: "match", payload: m })} />
+        )}
+        {tab === "money" && (
+          <Money data={data} calc={calc} isAdmin={isAdmin}
+            onTogglePay={(name, field) => {
+              const payments = { ...(data.payments || {}) };
+              payments[name] = { ...(payments[name] || {}), [field]: !payments[name]?.[field] };
+              save({ ...data, payments });
+            }} />
+        )}
+        {tab === "rules" && <RulesView config={config} calc={calc} />}
+      </main>
+
+      {isAdmin && (
+        <div className="adminbar">
+          <button className="btn primary" onClick={() => setModal({ type: "match", payload: null })}>+ Match result</button>
+          <button className="btn" onClick={() => setModal({ type: "participants" })}>Participants</button>
+          <button className="btn" onClick={() => setModal({ type: "settings" })}>Settings</button>
+        </div>
+      )}
+
+      {modal?.type === "pin" && (
+        <PinModal onClose={() => setModal(null)}
+          onOk={(pin) => { setAdminPin(pin); setModal(null); flash("Admin mode on"); }} />
+      )}
+      {modal?.type === "match" && (
+        <MatchEditor data={data} match={modal.payload}
+          onClose={() => setModal(null)}
+          onSave={(m, del) => {
+            let matches = [...data.matches];
+            if (del) matches = matches.filter((x) => x.id !== m.id);
+            else {
+              const i = matches.findIndex((x) => x.id === m.id);
+              if (i >= 0) matches[i] = m; else matches.push(m);
+            }
+            save({ ...data, matches });
+            setModal(null);
+            flash(del ? "Match removed" : "Match saved — balances updated");
+          }} />
+      )}
+      {modal?.type === "settings" && (
+        <SettingsModal data={data}
+          onClose={() => setModal(null)}
+          onSave={(next) => { save(next); setModal(null); flash("Settings saved"); }} />
+      )}
+      {modal?.type === "participants" && (
+        <ParticipantsModal data={data} config={config}
+          onClose={() => setModal(null)}
+          onSave={(participants, payments) => {
+            save({ ...data, participants, payments });
+            setModal(null); flash("Participants updated");
+          }} />
+      )}
+    </Shell>
+  );
+}
+
+const Shell = ({ children }) => <div className="wcp">{children}</div>;
+
+/* ---------- Standings ---------- */
+function Standings({ calc, config }) {
+  if (!calc.rows.length)
+    return <p style={{ color: "var(--chalk-dim)" }}>No participants yet. The admin adds them from the admin bar.</p>;
+  const medals = ["🥇", "🥈", "🥉"];
+  return (
+    <>
+      <div className="grid3" style={{ marginBottom: 14 }}>
+        <div className="card stat"><div className="k">Matches settled</div><div className="v mono">{calc.playedCount}</div></div>
+        <div className="card stat"><div className="k">League fund {calc.rollover > 0 ? "(incl. rollovers)" : ""}</div><div className="v mono" style={{ color: "var(--gold)" }}>{rs0(calc.leagueFund)}</div></div>
+        <div className="card stat"><div className="k">Prize money paid out</div><div className="v mono">{rs0(calc.distributed)}</div></div>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--chalk-dim)", marginBottom: 10 }}>
+        {calc.counts.group} in group stage (pot {rs0(calc.groupPot)}/match) · {calc.counts.ko} in knockouts (pot {rs0(calc.koPot)}/match) · {calc.counts.league} full members in the league race.
+        {!config.leagueFinalized && <> League prizes ({rs0(calc.leaguePrizes[0])} / {rs0(calc.leaguePrizes[1])} / {rs0(calc.leaguePrizes[2])}) lock in after the final.</>}
+      </p>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table>
+          <thead><tr>
+            <th>#</th><th>Participant</th><th>Type</th>
+            <th className="num">Wins</th><th className="num">Group</th><th className="num">Knockout</th>
+            <th className="num">League</th><th className="num">Total return</th><th className="num">Net so far</th>
+          </tr></thead>
+          <tbody>
+            {calc.rows.map((r) => (
+              <tr key={r.name}>
+                <td className="mono">{r.leagueRank && r.leagueRank <= 3 ? <span className="medal">{medals[r.leagueRank - 1]}</span> : r.rank}</td>
+                <td style={{ fontWeight: 600 }}>{r.name}</td>
+                <td><span className="chip">{TYPES[r.type].short}</span></td>
+                <td className="num">{r.wins}</td>
+                <td className="num">{inGroup(r) ? rs(r.groupEarned) : "—"}</td>
+                <td className="num">{inKO(r) ? rs(r.koEarned) : "—"}</td>
+                <td className="num">{r.type !== "full" ? "n/a" : config.leagueFinalized && r.leagueReturn ? rs(r.leagueReturn) : "—"}</td>
+                <td className="num" style={{ fontWeight: 700 }}>{rs(r.finalReturn)}</td>
+                <td className={"num " + (r.netSoFar >= 0 ? "pos" : "neg")}>{r.netSoFar >= 0 ? "+" : ""}{rs(r.netSoFar)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/* ---------- Matches ---------- */
+function Matches({ data, calc, isAdmin, onEdit }) {
+  const groups = { group: [], knockout: [] };
+  [...data.matches].sort((a, b) => a.num - b.num).forEach((m) => groups[m.stage]?.push(m));
+  const Section = ({ title, list, fee, pot }) => (
+    <section style={{ marginBottom: 22 }}>
+      <h2 className="disp" style={{ fontSize: 16, textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px", color: "var(--chalk-dim)" }}>
+        {title} <span className="mono" style={{ fontSize: 12 }}>· Rs {fee}/entry · pot {rs0(pot)}</span>
+      </h2>
+      {list.length === 0 && <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No results entered yet.</p>}
+      {list.map((m) => (
+        <article className="match" key={m.id}>
+          <div className="head">
+            <span className="chip">M{m.num}{m.group ? " · Grp " + m.group : ""}</span>
+            <span className="teams">{m.home} <span style={{ color: "var(--chalk-dim)" }}>vs</span> {m.away}</span>
+            {m.played ? <span className="score">{m.scoreHome} – {m.scoreAway}</span> : <span className="chip">{m.date || "Upcoming"}</span>}
+            {isAdmin && <button className="btn sm" onClick={() => onEdit(m)}>{m.played ? "Edit" : "Enter result"}</button>}
+          </div>
+          {m.played && (
+            <div className="body">
+              <span className="chip gold" title={RULE_HELP[m.rule]}>{m.rule}</span>
+              {m._rollover ? (
+                <span className="chip">Pot {rs0(m._pot)} → league fund</span>
+              ) : (
+                <>
+                  <span className="chip green">{m.winners.length} winner{m.winners.length > 1 ? "s" : ""} · {rs(m._share)} each</span>
+                  {m.winners.map((w) => <span className="winner-tag" key={w}>{w}</span>)}
+                </>
+              )}
+            </div>
+          )}
+        </article>
+      ))}
+    </section>
+  );
+  return (
+    <>
+      <Section title="Group stage" list={groups.group} fee={data.config.groupFee} pot={calc.groupPot} />
+      <Section title="Knockout stage" list={groups.knockout} fee={data.config.knockoutFee} pot={calc.koPot} />
+    </>
+  );
+}
+
+/* ---------- Money ---------- */
+function Money({ data, calc, isAdmin, onTogglePay }) {
+  return (
+    <>
+      <div className="grid2" style={{ marginBottom: 14 }}>
+        <div className="card stat"><div className="k">Total collection</div><div className="v mono" style={{ color: "var(--gold)" }}>{rs0(calc.totalCollection)}</div></div>
+        <div className="card stat"><div className="k">League fund</div><div className="v mono">{rs0(calc.leagueFund)}</div></div>
+        <div className="card stat"><div className="k">Entries paid</div><div className="v mono">{calc.paidIn} / {calc.counts.all}</div></div>
+        <div className="card stat"><div className="k">Payouts done</div><div className="v mono">{calc.paidOut} / {calc.counts.all}</div></div>
+      </div>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table>
+          <thead><tr>
+            <th>Participant</th><th>Type</th><th className="num">Entry due</th><th className="num">Total return</th>
+            <th>Entry paid</th><th>Payout done</th>
+          </tr></thead>
+          <tbody>
+            {calc.rows.map((r) => {
+              const pay = data.payments?.[r.name] || {};
+              const Cell = ({ field, on }) =>
+                isAdmin ? (
+                  <button className="btn sm" style={on ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
+                    onClick={() => onTogglePay(r.name, field)}>{on ? "✓ Yes" : "Mark"}</button>
+                ) : (
+                  <span className={"chip " + (on ? "green" : "")}>{on ? "✓" : "—"}</span>
+                );
+              return (
+                <tr key={r.name}>
+                  <td style={{ fontWeight: 600 }}>{r.name}</td>
+                  <td><span className="chip">{TYPES[r.type].short}</span></td>
+                  <td className="num">{rs0(r.entry)}</td>
+                  <td className="num">{rs(r.finalReturn)}</td>
+                  <td><Cell field="entryPaid" on={!!pay.entryPaid} /></td>
+                  <td><Cell field="payoutDone" on={!!pay.payoutDone} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/* ---------- Rules ---------- */
+function RulesView({ config, calc }) {
+  return (
+    <>
+      <div className="rulecard"><b>Rule 1 — Exact score.</b> Everyone who predicted the exact final score splits the match pot equally.</div>
+      <div className="rulecard"><b>Rule 2 — Goal difference.</b> No exact score? Correct goal difference in favor of the winning team wins. For a draw, anyone who predicted a draw wins.</div>
+      <div className="rulecard"><b>Rule 3 — Right team.</b> No score or GD match? Everyone who picked the winning team shares the pot.</div>
+      <div className="rulecard"><b>Rule 4 — Unclaimed draw.</b> If the match is a draw and nobody predicted a draw, the pot rolls over into the league fund for the top three.</div>
+      <div className="rulecard"><b>Enrollment.</b> Full members play everything and compete for the league. Group-only and Knockout-only members pay for and play their stage only. Match pots: {calc.counts.group}×{config.groupFee} = {rs0(calc.groupPot)} (group), {calc.counts.ko}×{config.knockoutFee} = {rs0(calc.koPot)} (knockout).</div>
+      <div className="rulecard"><b>Knockouts.</b> Score after 120 minutes counts as the final result.</div>
+      <div className="rulecard"><b>League.</b> The league fund ({rs0(calc.leagueFund)} incl. rollovers) is split 50 / 30 / 20 between the top three Full members by total winnings after the final.</div>
+      <div className="rulecard">You're responsible for your own predictions in the prediction app. Forget one, and you just made someone richer 😄</div>
+    </>
+  );
+}
+
+/* ---------- Modals ---------- */
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="sheet" role="dialog" aria-label={title}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h2 className="disp" style={{ fontSize: 17, textTransform: "uppercase" }}>{title}</h2>
+          <button className="btn sm" onClick={onClose}>Close</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PinModal({ onOk, onClose }) {
+  const [v, setV] = useState("");
+  const [err, setErr] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!v || busy) return;
+    setBusy(true);
+    const ok = await apiVerify(v).catch(() => false);
+    setBusy(false);
+    if (ok) onOk(v); else setErr(true);
+  };
+  return (
+    <Modal title="Admin access" onClose={onClose}>
+      <label className="f">Admin PIN</label>
+      <input type="password" value={v} autoFocus
+        onChange={(e) => { setV(e.target.value); setErr(false); }}
+        onKeyDown={(e) => e.key === "Enter" && submit()} />
+      {err && <p style={{ color: "var(--loss)", fontSize: 13, marginTop: 6 }}>Wrong PIN.</p>}
+      <div style={{ marginTop: 14 }}>
+        <button className="btn primary" onClick={submit} disabled={busy}>{busy ? "Checking…" : "Unlock"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function MatchEditor({ data, match, onClose, onSave }) {
+  const isNew = !match;
+  const nextNum = data.matches.length ? Math.max(...data.matches.map((m) => m.num)) + 1 : 1;
+  const [m, setM] = useState(match || {
+    id: "m" + Date.now(), num: nextNum, stage: "group",
+    home: "", away: "", played: true, scoreHome: "", scoreAway: "",
+    rule: "Rule 1", winners: [],
+  });
+  const set = (k, v) => setM((x) => ({ ...x, [k]: v }));
+  const toggleWinner = (name) =>
+    set("winners", m.winners.includes(name) ? m.winners.filter((x) => x !== name) : [...m.winners, name]);
+
+  const eligible = data.participants.filter(m.stage === "group" ? inGroup : inKO);
+  const cleanWinners = m.winners.filter((w) => eligible.some((p) => p.name === w));
+  const pot = eligible.length * (m.stage === "group" ? data.config.groupFee : data.config.knockoutFee);
+  const rollover = m.rule === "Rule 4" || cleanWinners.length === 0;
+  const valid = m.home.trim() && m.away.trim() && (!m.played || (m.scoreHome !== "" && m.scoreAway !== ""));
+
+  return (
+    <Modal title={isNew ? "Add match result" : `Edit match ${m.num}`} onClose={onClose}>
+      <div className="grid2">
+        <div><label className="f">Match #</label>
+          <input type="number" value={m.num} onChange={(e) => set("num", +e.target.value || 0)} /></div>
+        <div><label className="f">Stage</label>
+          <select value={m.stage} onChange={(e) => set("stage", e.target.value)}>
+            <option value="group">Group (Rs {data.config.groupFee})</option>
+            <option value="knockout">Knockout (Rs {data.config.knockoutFee})</option>
+          </select></div>
+      </div>
+      <div className="grid2">
+        <div><label className="f">Home team</label><input value={m.home} onChange={(e) => set("home", e.target.value)} placeholder="e.g. Brazil" /></div>
+        <div><label className="f">Away team</label><input value={m.away} onChange={(e) => set("away", e.target.value)} placeholder="e.g. Japan" /></div>
+      </div>
+      <label className="f" style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontSize: 13, letterSpacing: 0 }}>
+        <input type="checkbox" style={{ width: "auto" }} checked={m.played} onChange={(e) => set("played", e.target.checked)} />
+        Result is in (uncheck to list as upcoming)
+      </label>
+      {m.played && (
+        <>
+          <div className="grid2">
+            <div><label className="f">Score — {m.home || "home"}</label>
+              <input type="number" min="0" value={m.scoreHome} onChange={(e) => set("scoreHome", e.target.value)} /></div>
+            <div><label className="f">Score — {m.away || "away"}</label>
+              <input type="number" min="0" value={m.scoreAway} onChange={(e) => set("scoreAway", e.target.value)} /></div>
+          </div>
+          <label className="f">Rule decider</label>
+          <select value={m.rule} onChange={(e) => set("rule", e.target.value)}>
+            {RULES.map((r) => <option key={r} value={r}>{r} — {RULE_HELP[r]}</option>)}
+          </select>
+          {m.rule !== "Rule 4" && (
+            <>
+              <label className="f">Winners — only {m.stage === "group" ? "group-stage" : "knockout"} players listed ({eligible.length})</label>
+              <div className="winnergrid">
+                {eligible.map((p) => (
+                  <label key={p.name}>
+                    <input type="checkbox" checked={m.winners.includes(p.name)} onChange={() => toggleWinner(p.name)} />
+                    {p.name}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+          <p style={{ marginTop: 10, fontSize: 13, color: "var(--chalk-dim)" }}>
+            Pot: <b className="mono" style={{ color: "var(--gold)" }}>{rs0(pot)}</b>
+            {rollover
+              ? " → rolls over to the league fund (no winners)"
+              : <> ÷ {cleanWinners.length} = <b className="mono" style={{ color: "var(--grass)" }}>{rs(pot / cleanWinners.length)}</b> each</>}
+          </p>
+        </>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="btn primary" disabled={!valid} style={!valid ? { opacity: 0.5 } : {}}
+          onClick={() => onSave({ ...m, winners: cleanWinners }, false)}>Save match</button>
+        {!isNew && <button className="btn danger" onClick={() => onSave(m, true)}>Delete</button>}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- Participants manager (admin) ---------- */
+function ParticipantsModal({ data, config, onClose, onSave }) {
+  const [list, setList] = useState(data.participants.map((p) => ({ ...p })));
+  const [payments, setPayments] = useState({ ...(data.payments || {}) });
+  const [newName, setNewName] = useState("");
+  const [newType, setNewType] = useState("full");
+  const [removing, setRemoving] = useState(null);
+
+  const hasWins = (name) =>
+    data.matches.some((m) => (m.winners || []).includes(name));
+
+  const add = () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (list.some((p) => p.name.toLowerCase() === name.toLowerCase())) return;
+    setList([...list, { name, type: newType }]);
+    setNewName("");
+  };
+
+  const togglePaid = (name) =>
+    setPayments((p) => ({ ...p, [name]: { ...(p[name] || {}), entryPaid: !p[name]?.entryPaid } }));
+
+  return (
+    <Modal title="Participants" onClose={onClose}>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <label className="f">Add participant</label>
+          <input value={newName} placeholder="Name" onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && add()} />
+        </div>
+        <div>
+          <label className="f">Enrollment</label>
+          <select value={newType} onChange={(e) => setNewType(e.target.value)}>
+            {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+          </select>
+        </div>
+        <button className="btn primary" onClick={add}>Add</button>
+      </div>
+
+      <div style={{ marginTop: 14, fontSize: 12, color: "var(--chalk-dim)" }}>
+        {list.length} participants · {list.filter(inGroup).length} group · {list.filter(inKO).length} knockout · {list.filter(inLeague).length} league. Entry due updates with type.
+      </div>
+
+      <div style={{ marginTop: 6 }}>
+        {list.map((p, i) => (
+          <div className="prow" key={p.name}>
+            <span className="pname">{p.name}</span>
+            <select value={p.type}
+              onChange={(e) => {
+                const next = [...list]; next[i] = { ...p, type: e.target.value }; setList(next);
+              }}>
+              {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+            </select>
+            <span className="mono" style={{ fontSize: 12, color: "var(--chalk-dim)", minWidth: 72, textAlign: "right" }}>
+              {rs0(entryFor(p, config))}
+            </span>
+            <button className="btn sm" style={payments[p.name]?.entryPaid ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
+              onClick={() => togglePaid(p.name)}>
+              {payments[p.name]?.entryPaid ? "✓ Paid" : "Unpaid"}
+            </button>
+            {removing === p.name ? (
+              <button className="btn sm danger" onClick={() => { setList(list.filter((x) => x.name !== p.name)); setRemoving(null); }}>
+                Confirm{hasWins(p.name) ? " (has wins!)" : ""}
+              </button>
+            ) : (
+              <button className="btn sm danger" onClick={() => setRemoving(p.name)}>✕</button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        <button className="btn primary" onClick={() => onSave(list, payments)}>Save changes</button>
+      </div>
+      <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 10 }}>
+        Changing types changes match pots for every match in that stage. Removing someone with recorded wins will redistribute past prizes — avoid unless correcting a mistake.
+      </p>
+    </Modal>
+  );
+}
+
+function SettingsModal({ data, onClose, onSave }) {
+  const [c, setC] = useState({ ...data.config });
+  const set = (k, v) => setC((x) => ({ ...x, [k]: v }));
+  const importFixtures = () => {
+    const existing = new Set(data.matches.map((m) => m.stage + ":" + m.num));
+    const fresh = makeGroupStageMatches().filter((m) => !existing.has(m.stage + ":" + m.num));
+    onSave({ ...data, config: c, matches: [...data.matches, ...fresh] });
+  };
+  return (
+    <Modal title="Pool settings" onClose={onClose}>
+      <label className="f">Pool name</label>
+      <input value={c.poolName} onChange={(e) => set("poolName", e.target.value)} />
+      <div className="grid3">
+        <div><label className="f">Group fee</label><input type="number" value={c.groupFee} onChange={(e) => set("groupFee", +e.target.value || 0)} /></div>
+        <div><label className="f">KO fee</label><input type="number" value={c.knockoutFee} onChange={(e) => set("knockoutFee", +e.target.value || 0)} /></div>
+        <div><label className="f">League fee</label><input type="number" value={c.leagueFee} onChange={(e) => set("leagueFee", +e.target.value || 0)} /></div>
+      </div>
+      <div className="grid2">
+        <div><label className="f">Group matches</label><input type="number" value={c.groupMatchCount} onChange={(e) => set("groupMatchCount", +e.target.value || 0)} /></div>
+        <div><label className="f">Knockout matches</label><input type="number" value={c.knockoutMatchCount} onChange={(e) => set("knockoutMatchCount", +e.target.value || 0)} /></div>
+      </div>
+      <label className="f" style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontSize: 13, letterSpacing: 0 }}>
+        <input type="checkbox" style={{ width: "auto" }} checked={c.leagueFinalized} onChange={(e) => set("leagueFinalized", e.target.checked)} />
+        Finalize league — award 50/30/20 prizes to the top 3 Full members
+      </label>
+      <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 10 }}>
+        The admin PIN is set with the ADMIN_PIN environment variable on Vercel, not here.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="btn primary" onClick={() => onSave({ ...data, config: c })}>Save settings</button>
+        <button className="btn" onClick={importFixtures}>Import 72 group fixtures</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- First-run setup (admin already unlocked) ---------- */
+function SetupWizard({ onDone }) {
+  const [c, setC] = useState({ ...DEFAULT_CONFIG });
+  const [names, setNames] = useState("");
+  const [preload, setPreload] = useState(true);
+  const set = (k, v) => setC((x) => ({ ...x, [k]: v }));
+  const parsed = names.split("\n").map((s) => s.trim()).filter(Boolean);
+  return (
+    <main>
+      <div className="eyebrow" style={{ marginTop: 8 }}>First-time setup · admin</div>
+      <h1 className="disp" style={{ marginBottom: 14 }}>Create the World Cup 2026 pool</h1>
+      <div className="card">
+        <label className="f">Pool name</label>
+        <input value={c.poolName} onChange={(e) => set("poolName", e.target.value)} />
+        <div className="grid3">
+          <div><label className="f">Group fee /match</label><input type="number" value={c.groupFee} onChange={(e) => set("groupFee", +e.target.value || 0)} /></div>
+          <div><label className="f">Knockout fee /match</label><input type="number" value={c.knockoutFee} onChange={(e) => set("knockoutFee", +e.target.value || 0)} /></div>
+          <div><label className="f">League fee</label><input type="number" value={c.leagueFee} onChange={(e) => set("leagueFee", +e.target.value || 0)} /></div>
+        </div>
+        <div className="grid2">
+          <div><label className="f">Group matches</label><input type="number" value={c.groupMatchCount} onChange={(e) => set("groupMatchCount", +e.target.value || 0)} /></div>
+          <div><label className="f">Knockout matches</label><input type="number" value={c.knockoutMatchCount} onChange={(e) => set("knockoutMatchCount", +e.target.value || 0)} /></div>
+        </div>
+        <label className="f">Participants — one name per line, optional ({parsed.length} so far)</label>
+        <textarea rows={7} value={names} onChange={(e) => setNames(e.target.value)} placeholder={"Aadesh Baral\nAbhinit Karna\n…"} />
+        <p style={{ fontSize: 12, color: "var(--chalk-dim)", marginTop: 6 }}>
+          Everyone starts as a Full member; switch anyone to Group-only or Knockout-only later in Participants, and add more people any time.
+        </p>
+        <label className="f" style={{ display: "flex", gap: 8, alignItems: "center", textTransform: "none", fontSize: 13, letterSpacing: 0 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={preload} onChange={(e) => setPreload(e.target.checked)} />
+          Preload all 72 group-stage fixtures (teams, groups, dates) as upcoming matches
+        </label>
+        <div style={{ marginTop: 14 }}>
+          <button className="btn primary"
+            onClick={() => onDone({
+              config: c,
+              participants: parsed.map((name) => ({ name, type: "full" })),
+              matches: preload ? makeGroupStageMatches() : [], payments: {},
+            })}>
+            Create pool
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
