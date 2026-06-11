@@ -234,7 +234,9 @@ function compute(data) {
     r.finalReturn = r.earned + r.leagueReturn;
   });
 
-  const totalCollection = participants.reduce((a, p) => a + entryFor(p, config), 0);
+  const totalCollection = participants
+    .filter((p) => payments?.[p.name]?.entryPaid)
+    .reduce((a, p) => a + entryFor(p, config), 0);
   const distributed = rows.reduce((a, r) => a + r.earned, 0);
 
   return {
@@ -271,25 +273,42 @@ async function apiVerify(pin) {
   });
   return r.ok;
 }
+async function apiUserVerify(pin) {
+  const r = await fetch("/api/user/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin }),
+  });
+  return r.ok;
+}
 
 /* ============================================================ */
 export default function WorldCupPool() {
   const [data, setData] = useState(null);
-  const [phase, setPhase] = useState("loading"); // loading | empty | main | error
+  const [phase, setPhase] = useState("locked"); // locked | loading | empty | main | error
   const [tab, setTab] = useState("standings");
   const [adminPin, setAdminPin] = useState(null); // held in memory only
   const isAdmin = adminPin !== null;
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState("");
 
+  const loadPool = async () => {
+    setPhase("loading");
+    try {
+      const d = await apiGet();
+      if (d) { setData(d); setPhase("main"); } else setPhase("empty");
+    } catch { setPhase("error"); }
+  };
+
   useEffect(() => {
-    (async () => {
-      try {
-        const d = await apiGet();
-        if (d) { setData(d); setPhase("main"); } else setPhase("empty");
-      } catch { setPhase("error"); }
-    })();
-  }, []);
+    const stored = sessionStorage.getItem("wc26_pin") ?? "";
+    apiUserVerify(stored)
+      .then((ok) => {
+        if (!ok) { if (stored) sessionStorage.removeItem("wc26_pin"); return; }
+        loadPool();
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2200); };
 
@@ -313,16 +332,26 @@ export default function WorldCupPool() {
 
   const calc = useMemo(() => (data ? compute(data) : null), [data]);
 
+  if (phase === "locked")
+    return (
+      <Shell>
+        <UserPinGate onUnlock={(pin) => {
+          sessionStorage.setItem("wc26_pin", pin);
+          loadPool();
+        }} />
+      </Shell>
+    );
+
   if (phase === "loading")
-    return <Shell><style>{css}</style><main><p style={{ color: "var(--chalk-dim)" }}>Loading the pool…</p></main></Shell>;
+    return <Shell><main><p style={{ color: "var(--chalk-dim)" }}>Loading the pool…</p></main></Shell>;
 
   if (phase === "error")
-    return <Shell><style>{css}</style><main>
+    return <Shell><main>
       <p style={{ color: "var(--loss)" }}>Couldn't reach the database. Check the Upstash env vars on Vercel, then reload.</p>
     </main></Shell>;
 
   if (phase === "empty")
-    return <Shell><style>{css}</style>
+    return <Shell>
       {toast && <div className="toast" role="status">{toast}</div>}
       {!isAdmin ? (
         <main>
@@ -349,7 +378,6 @@ export default function WorldCupPool() {
 
   return (
     <Shell>
-      <style>{css}</style>
       {toast && <div className="toast" role="status">{toast}</div>}
 
       <header className="top">
@@ -435,7 +463,12 @@ export default function WorldCupPool() {
   );
 }
 
-const Shell = ({ children }) => <div className="wcp">{children}</div>;
+const Shell = ({ children }) => (
+  <div className="wcp">
+    <style dangerouslySetInnerHTML={{ __html: css }} />
+    {children}
+  </div>
+);
 
 /* ---------- Standings ---------- */
 function Standings({ calc, config }) {
@@ -596,6 +629,35 @@ function Modal({ title, onClose, children }) {
         {children}
       </div>
     </div>
+  );
+}
+
+function UserPinGate({ onUnlock }) {
+  const [v, setV] = useState("");
+  const [err, setErr] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!v || busy) return;
+    setBusy(true);
+    const ok = await apiUserVerify(v).catch(() => false);
+    setBusy(false);
+    if (ok) onUnlock(v); else setErr(true);
+  };
+  return (
+    <main style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div className="card" style={{ width: "100%", maxWidth: 360 }}>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>USA · Canada · Mexico</div>
+        <h1 className="disp" style={{ fontSize: 22, marginBottom: 16 }}>World Cup 2026 Pool</h1>
+        <label className="f">Access PIN</label>
+        <input type="password" value={v} autoFocus
+          onChange={(e) => { setV(e.target.value); setErr(false); }}
+          onKeyDown={(e) => e.key === "Enter" && submit()} />
+        {err && <p style={{ color: "var(--loss)", fontSize: 13, marginTop: 6 }}>Wrong PIN.</p>}
+        <div style={{ marginTop: 14 }}>
+          <button className="btn primary" onClick={submit} disabled={busy}>{busy ? "Checking…" : "Enter pool"}</button>
+        </div>
+      </div>
+    </main>
   );
 }
 
