@@ -17,15 +17,16 @@ import { getPtfCredentials } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 async function buildCookie() {
-  let session = process.env.PTF_SESSION;
-  let csrf    = process.env.PTF_CSRF;
-  if (!session) {
-    try {
-      const creds = await getPtfCredentials();
-      session = creds?.session;
-      csrf    = creds?.csrf;
-    } catch {}
-  }
+  // DB credentials (admin Settings) take priority over env vars.
+  let session, csrf;
+  try {
+    const creds = await getPtfCredentials();
+    session = creds?.session;
+    csrf    = creds?.csrf;
+  } catch {}
+  // Fall back to env vars if DB has nothing.
+  if (!session) session = process.env.PTF_SESSION;
+  if (!csrf)    csrf    = process.env.PTF_CSRF;
   const parts = [];
   if (session) parts.push(`PHPSESSID=${session}`);
   if (csrf)    parts.push(`YII_CSRF_TOKEN=${csrf}`);
