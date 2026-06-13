@@ -504,8 +504,37 @@ const Shell = ({ children }) => (
 
 /* ---------- Standings ---------- */
 function Standings({ calc, config }) {
+  const [sortKey, setSortKey] = useState("rank");
+  const [sortDir, setSortDir] = useState("asc");
+
+  const handleSort = (key, defaultDir = "desc") => {
+    if (sortKey === key) setSortDir((d) => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(defaultDir); }
+  };
+
+  const SortTh = ({ label, k, defaultDir = "desc", className }) => {
+    const active = sortKey === k;
+    return (
+      <th className={className} onClick={() => handleSort(k, defaultDir)}
+        style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}>
+        {label}
+        <span style={{ marginLeft: 4, opacity: active ? 1 : 0.3, fontSize: 10 }}>
+          {active ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+        </span>
+      </th>
+    );
+  };
+
   if (!calc.rows.length)
     return <p style={{ color: "var(--chalk-dim)" }}>No participants yet. The admin adds them from the admin bar.</p>;
+
+  const sorted = [...calc.rows].sort((a, b) => {
+    const mul = sortDir === "asc" ? 1 : -1;
+    if (sortKey === "name") return mul * a.name.localeCompare(b.name);
+    const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
+    return mul * (va - vb);
+  });
+
   const medals = ["🥇", "🥈", "🥉"];
   return (
     <>
@@ -521,12 +550,18 @@ function Standings({ calc, config }) {
       <div className="card" style={{ padding: 0, overflowX: "auto" }}>
         <table>
           <thead><tr>
-            <th>#</th><th>Participant</th><th>Type</th>
-            <th className="num">Wins</th><th className="num">Group</th><th className="num">Knockout</th>
-            <th className="num">League</th><th className="num">Total return</th><th className="num">Net so far</th>
+            <SortTh label="#" k="rank" defaultDir="asc" />
+            <SortTh label="Participant" k="name" defaultDir="asc" />
+            <th>Type</th>
+            <SortTh label="Wins" k="wins" className="num" />
+            <SortTh label="Group" k="groupEarned" className="num" />
+            <SortTh label="Knockout" k="koEarned" className="num" />
+            <SortTh label="League" k="leagueReturn" className="num" />
+            <SortTh label="Total return" k="finalReturn" className="num" />
+            <SortTh label="Net so far" k="netSoFar" className="num" />
           </tr></thead>
           <tbody>
-            {calc.rows.map((r) => (
+            {sorted.map((r) => (
               <tr key={r.name}>
                 <td className="mono">{r.leagueRank && r.leagueRank <= 3 ? <span className="medal">{medals[r.leagueRank - 1]}</span> : r.rank}</td>
                 <td style={{ fontWeight: 600 }}>{r.name}</td>
