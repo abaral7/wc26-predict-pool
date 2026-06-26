@@ -609,18 +609,18 @@ function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAd
     if (loading) return;
     setLoading(true); setErr("");
     try {
-      let fixtureId = match.ptfFixtureId ? String(match.ptfFixtureId) : null;
+      let fixtureId = null;
 
-      // Auto-resolve fixture ID by team name if not set
-      if (!fixtureId) {
-        const fr = await fetch("/api/ptf/fixtures");
-        if (fr.ok) {
-          const { fixtures } = await fr.json();
-          const found = findPtfFixture(fixtures || [], match.home, match.away);
-          if (found) fixtureId = found.id;
-        }
-        if (!fixtureId) { setErr("Could not find PTF fixture for this match"); return; }
+      // Always try team-name auto-find first — most reliable source of truth
+      const fr = await fetch("/api/ptf/fixtures");
+      if (fr.ok) {
+        const { fixtures } = await fr.json();
+        const found = findPtfFixture(fixtures || [], match.home, match.away);
+        if (found) fixtureId = found.id;
       }
+      // Fall back to saved ptfFixtureId if auto-find failed or returned nothing
+      if (!fixtureId && match.ptfFixtureId) fixtureId = String(match.ptfFixtureId);
+      if (!fixtureId) { setErr("Could not find PTF fixture — check PTF credentials in Settings → PTF"); return; }
 
       const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(fixtureId)}`);
       const j = await r.json();
@@ -1453,17 +1453,15 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, o
     try {
       let resolvedId = ptfId;
 
-      // If no confirmed ID was set, or the user left it as the match-number default,
-      // try to find the real fixture ID by matching team names
-      if (!confirmedId && fixture.home && fixture.away) {
+      // Always try team-name auto-find — overrides any saved/typed ID when a match is found
+      if (fixture.home && fixture.away && fixture.home !== "TBD" && fixture.away !== "TBD") {
         const fr = await fetch("/api/ptf/fixtures");
         if (fr.ok) {
           const { fixtures } = await fr.json();
           const found = findPtfFixture(fixtures || [], fixture.home, fixture.away);
-          if (found && found.id !== resolvedId) {
+          if (found) {
             resolvedId = found.id;
-            setPtfId(found.id);
-            setAutoDetected(found);
+            if (found.id !== ptfId) { setPtfId(found.id); setAutoDetected(found); }
           }
         }
       }
