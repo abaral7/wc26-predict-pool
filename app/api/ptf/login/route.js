@@ -1,9 +1,9 @@
 // Automated PTF login — extracts session cookies so admins never paste them manually.
 // POST { username, password }  +  x-admin-pin header
 // Flow:
-//   1. GET /site/login  → grab YII_CSRF_TOKEN cookie + hidden _csrf field
-//   2. POST /site/login → on success, Set-Cookie contains PHPSESSID + new YII_CSRF_TOKEN
-//   3. Save both to Redis via setPtfCredentials; also save credentials for auto-refresh
+//   1. GET /site/login  → grab YII_CSRF_TOKEN cookie + hidden field
+//   2. POST /site/login → 302 → follow all redirects with cookie jar until non-redirect
+//   3. Save PHPSESSID + YII_CSRF_TOKEN to Redis; also save credentials for auto-refresh
 
 import { getPtfCredentials, setPtfCredentials } from "@/lib/db";
 
@@ -53,12 +53,12 @@ export async function doLogin(username, password) {
   const csrfField = csrfMatch1?.[1] ?? csrfMatch2?.[1] ?? null;
   if (!csrfField) return { ok: false, error: "Could not find CSRF field on login page" };
 
-  // Extract YII_CSRF_TOKEN from Set-Cookie
-  const setCookies = getRes.headers.getSetCookie?.() ?? [];
-  const csrfCookie = extractCookie(setCookies, "YII_CSRF_TOKEN");
-  if (!csrfCookie) return { ok: false, error: "Could not get CSRF cookie from login page" };
+  // Seed cookie jar with cookies from the GET response
+  const jar = parseCookieJar(getRes.headers.getSetCookie?.() ?? []);
 
-  // Step 2: POST login form
+  // Step 2: POST login form, then follow ALL redirects manually so the server
+  // can fully activate the session (PTF does GET / → GET /profile/index before
+  // the PHPSESSID becomes valid for minileague requests).
   const body = new URLSearchParams({
     "YII_CSRF_TOKEN": csrfField,
     "LoginForm[email]": username,
@@ -66,34 +66,70 @@ export async function doLogin(username, password) {
     "LoginForm[rememberMe]": "0",
   });
 
-  const postRes = await fetch(`${BASE}/site/login`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      "cookie": `YII_CSRF_TOKEN=${csrfCookie}`,
-      "user-agent": "Mozilla/5.0",
-      "referer": `${BASE}/site/login`,
-    },
-    body: body.toString(),
-    redirect: "manual", // don't follow redirect — we need to read Set-Cookie first
-  });
+  let nextUrl = `${BASE}/site/login`;
+  let method = "POST";
+  let postBody = body.toString();
+  let loggedIn = false;
 
-  const loginCookies = postRes.headers.getSetCookie?.() ?? [];
+  for (let i = 0; i < 6; i++) {
+    const opts = {
+      method,
+      headers: {
+        "user-agent": "Mozilla/5.0",
+        "referer": BASE,
+        "cookie": jarToString(jar),
+        ...(method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : {}),
+      },
+      redirect: "manual",
+      ...(method === "POST" ? { body: postBody } : {}),
+    };
 
-  // Successful login redirects away from /site/login
-  if (postRes.status !== 302 && postRes.status !== 301 && postRes.status !== 200) {
-    return { ok: false, error: `Login POST returned ${postRes.status}` };
+    const res = await fetch(nextUrl, opts);
+    mergeCookies(jar, res.headers.getSetCookie?.() ?? []);
+
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) break;
+      // Detect successful login: POST redirects away from /site/login
+      if (method === "POST" && !loc.includes("site/login")) loggedIn = true;
+      nextUrl = loc.startsWith("http") ? loc : `${BASE}${loc}`;
+      method = "GET";
+      postBody = null;
+    } else {
+      break;
+    }
   }
 
-  const session = extractCookie(loginCookies, "PHPSESSID");
-  const newCsrf = extractCookie(loginCookies, "YII_CSRF_TOKEN") || csrfCookie;
+  const session = jar["PHPSESSID"];
+  const csrf = jar["YII_CSRF_TOKEN"];
 
-  if (!session) {
-    // If no new PHPSESSID, login likely failed (bad credentials)
-    return { ok: false, error: "Login failed — check username and password" };
+  if (!session || !loggedIn) {
+    return { ok: false, error: "Login failed — check email and password" };
   }
 
-  return { ok: true, session, csrf: newCsrf };
+  return { ok: true, session, csrf: csrf || "" };
+}
+
+function parseCookieJar(setCookieHeaders) {
+  const jar = {};
+  for (const header of setCookieHeaders) {
+    const [kv] = header.split(";");
+    const eq = kv.indexOf("=");
+    if (eq > 0) jar[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
+  }
+  return jar;
+}
+
+function mergeCookies(jar, setCookieHeaders) {
+  for (const header of setCookieHeaders) {
+    const [kv] = header.split(";");
+    const eq = kv.indexOf("=");
+    if (eq > 0) jar[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
+  }
+}
+
+function jarToString(jar) {
+  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 function extractCookie(setCookieHeaders, name) {
