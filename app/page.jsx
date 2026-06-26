@@ -407,7 +407,8 @@ export default function WorldCupPool() {
         {tab === "matches" && (
           <Matches data={data} calc={calc} isAdmin={isAdmin}
             onEdit={(m) => setModal({ type: "match", payload: m })}
-            onSavePredictions={(ptfId, preds) => save({ ...data, ptfPredictions: { ...(data.ptfPredictions || {}), [ptfId]: preds } })} />
+            onSavePredictions={(ptfId, preds) => save({ ...data, ptfPredictions: { ...(data.ptfPredictions || {}), [ptfId]: preds } })}
+            onBatchSavePredictions={(predsMap) => save({ ...data, ptfPredictions: { ...(data.ptfPredictions || {}), ...predsMap } })} />
         )}
         {tab === "money" && (
           <Money data={data} calc={calc} isAdmin={isAdmin}
@@ -605,13 +606,26 @@ function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAd
   const cached = cachedPredictions?.[String(match.ptfFixtureId)];
 
   const fetchAndSave = async () => {
-    if (!match.ptfFixtureId || loading) return;
+    if (loading) return;
     setLoading(true); setErr("");
     try {
-      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(match.ptfFixtureId)}`);
+      let fixtureId = match.ptfFixtureId ? String(match.ptfFixtureId) : null;
+
+      // Auto-resolve fixture ID by team name if not set
+      if (!fixtureId) {
+        const fr = await fetch("/api/ptf/fixtures");
+        if (fr.ok) {
+          const { fixtures } = await fr.json();
+          const found = findPtfFixture(fixtures || [], match.home, match.away);
+          if (found) fixtureId = found.id;
+        }
+        if (!fixtureId) { setErr("Could not find PTF fixture for this match"); return; }
+      }
+
+      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(fixtureId)}`);
       const j = await r.json();
       if (!r.ok) { setErr(j.error || "Failed"); return; }
-      onSavePredictions(String(match.ptfFixtureId), { ...j, fetchedAt: new Date().toISOString() });
+      onSavePredictions(String(fixtureId), { ...j, fetchedAt: new Date().toISOString() });
     } catch { setErr("Network error"); }
     finally { setLoading(false); }
   };
@@ -635,7 +649,7 @@ function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAd
         <span className="teams">{match.home} <span style={{ color: "var(--chalk-dim)" }}>vs</span> {match.away}</span>
         {match.played ? <span className="score">{match.scoreHome} – {match.scoreAway}</span> : <span className="chip">{match.date || "Upcoming"}</span>}
         {isAdmin && <button className="btn sm" onClick={() => onEdit(match)}>{match.played ? "Edit" : "Enter result"}</button>}
-        {isAdmin && match.ptfFixtureId && (
+        {isAdmin && match.home && match.away && match.home !== "TBD" && match.away !== "TBD" && (
           <button className="btn sm" onClick={fetchAndSave} disabled={loading}>
             {loading ? "Fetching…" : "Fetch PTF"}
           </button>
@@ -678,9 +692,21 @@ const SS_LIVE_KEY = "wc26_live_map";
 const SS_LIVE_TS_KEY = "wc26_live_ts";
 
 /* ---------- Matches ---------- */
-function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
+function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePredictions }) {
   const [liveMap, setLiveMap] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem(SS_LIVE_KEY) || "{}"); }
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(SS_LIVE_KEY) || "{}");
+      // Old format was keyed by wc26 game ID (small integers like "1","2").
+      // New format is keyed by pool match id (strings like "match_abc").
+      // If the stored keys look like small integers, discard the stale cache.
+      const keys = Object.keys(stored);
+      if (keys.length && keys.every(k => /^\d+$/.test(k))) {
+        sessionStorage.removeItem(SS_LIVE_KEY);
+        sessionStorage.removeItem(SS_LIVE_TS_KEY);
+        return {};
+      }
+      return stored;
+    }
     catch { return {}; }
   });
   const [lastFetchedAt, setLastFetchedAt] = useState(() => {
@@ -696,18 +722,67 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
     if (cooldownLeft > 0 || liveLoading) return;
     setLiveLoading(true);
     try {
-      const r = await fetch("/api/wc26/games");
-      if (!r.ok) return;
-      const { live } = await r.json();
-      const map = {};
-      (live || []).forEach((g) => { map[String(g.id)] = g; });
+      // Fetch live scores + PTF fixture map in parallel
+      const [liveRes, fixturesRes] = await Promise.all([
+        fetch("/api/wc26/games"),
+        fetch("/api/ptf/fixtures"),
+      ]);
+      if (!liveRes.ok) return;
+
+      const { live } = await liveRes.json();
+      const { fixtures: ptfFixtures } = fixturesRes.ok ? await fixturesRes.json() : { fixtures: [] };
+
+      // Match each live game to a pool match and PTF fixture by team name
+      const newMap = {};
+      const liveMatchPtfIds = [];
+
+      for (const g of (live || [])) {
+        const poolMatch = data.matches.find(
+          (m) => teamsMatch(m.home, g.homeTeam) && teamsMatch(m.away, g.awayTeam)
+        );
+        if (!poolMatch) continue;
+        newMap[String(poolMatch.id)] = g;
+
+        // Resolve PTF fixture ID: saved on match or auto-detect from fixture map
+        let ptfId = poolMatch.ptfFixtureId ? String(poolMatch.ptfFixtureId) : null;
+        if (!ptfId && ptfFixtures?.length) {
+          const found = findPtfFixture(ptfFixtures, poolMatch.home, poolMatch.away);
+          if (found) ptfId = found.id;
+        }
+        if (ptfId) liveMatchPtfIds.push(ptfId);
+      }
+
+      setLiveMap(newMap);
       const ts = Date.now();
-      setLiveMap(map);
       setLastFetchedAt(ts);
       try {
-        sessionStorage.setItem(SS_LIVE_KEY, JSON.stringify(map));
+        sessionStorage.setItem(SS_LIVE_KEY, JSON.stringify(newMap));
         sessionStorage.setItem(SS_LIVE_TS_KEY, String(ts));
       } catch {}
+
+      // Auto-fetch PTF predictions for live matches not cached in the last 5 minutes.
+      // Only when admin is logged in — non-admins can't write to the pool.
+      if (isAdmin && liveMatchPtfIds.length) {
+        const stale = liveMatchPtfIds.filter((id) => {
+          const cached = data.ptfPredictions?.[id];
+          return !cached?.fetchedAt || Date.now() - new Date(cached.fetchedAt).getTime() > 5 * 60 * 1000;
+        });
+
+        if (stale.length) {
+          const results = await Promise.all(
+            stale.map(async (ptfId) => {
+              try {
+                const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(ptfId)}`);
+                if (!r.ok) return null;
+                const j = await r.json();
+                return [ptfId, { ...j, fetchedAt: new Date().toISOString() }];
+              } catch { return null; }
+            })
+          );
+          const batch = Object.fromEntries(results.filter(Boolean));
+          if (Object.keys(batch).length) onBatchSavePredictions(batch);
+        }
+      }
     } catch { /* silent */ }
     finally { setLiveLoading(false); }
   };
@@ -731,7 +806,7 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions }) {
       </h2>
       {list.length === 0 && <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No results entered yet.</p>}
       {list.map((m) => (
-        <MatchCard key={m.id} match={m} liveData={liveMap[String(m.num)]}
+        <MatchCard key={m.id} match={m} liveData={liveMap[String(m.id)]}
           cachedPredictions={data.ptfPredictions} onSavePredictions={onSavePredictions}
           isAdmin={isAdmin} onEdit={onEdit} />
       ))}
@@ -1261,6 +1336,20 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
   );
 }
 
+// Normalize a team name for fuzzy comparison (lowercase, letters/digits only)
+function normTeam(s) {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+// Returns true if two team names are likely the same (substring match after normalization)
+function teamsMatch(a, b) {
+  const na = normTeam(a), nb = normTeam(b);
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+// Find best-matching PTF fixture for a pool match by home/away team names
+function findPtfFixture(fixtures, home, away) {
+  return fixtures.find(f => teamsMatch(f.homeTeam, home) && teamsMatch(f.awayTeam, away)) ?? null;
+}
+
 function computeWinners(predictions, aH, aA) {
   const exactScore  = predictions.filter(p => p.predHome === aH && p.predAway === aA);
   const aGD         = aH - aA;
@@ -1286,8 +1375,11 @@ function timeAgo(iso) {
 }
 
 function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, onApplyScore, cachedPredictions, onSavePredictions }) {
-  const initialId = fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : (fixture.num ? String(fixture.num) : "");
+  // ptfFixtureId is the confirmed ID; fixture.num is just a fallback guess
+  const confirmedId = fixture.ptfFixtureId != null ? String(fixture.ptfFixtureId) : null;
+  const initialId = confirmedId ?? (fixture.num ? String(fixture.num) : "");
   const [ptfId, setPtfId] = useState(initialId);
+  const [autoDetected, setAutoDetected] = useState(null); // fixture ID found by team-name lookup
   const [result, setResult] = useState(() => (initialId && cachedPredictions?.[initialId]) || null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -1296,17 +1388,35 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, o
   const [liveA, setLiveA] = useState(() => initScore((initialId && cachedPredictions?.[initialId]) || null).a);
 
   const go = async () => {
-    if (!ptfId || loading) return;
+    if (loading) return;
     setLoading(true); setErr(""); setResult(null); setLiveH(""); setLiveA("");
     try {
-      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(ptfId)}`);
+      let resolvedId = ptfId;
+
+      // If no confirmed ID was set, or the user left it as the match-number default,
+      // try to find the real fixture ID by matching team names
+      if (!confirmedId && fixture.home && fixture.away) {
+        const fr = await fetch("/api/ptf/fixtures");
+        if (fr.ok) {
+          const { fixtures } = await fr.json();
+          const found = findPtfFixture(fixtures || [], fixture.home, fixture.away);
+          if (found && found.id !== resolvedId) {
+            resolvedId = found.id;
+            setPtfId(found.id);
+            setAutoDetected(found);
+          }
+        }
+      }
+
+      if (!resolvedId) { setErr("Enter a PTF fixture ID"); setLoading(false); return; }
+      const r = await fetch(`/api/ptf/predictions?fixtureid=${encodeURIComponent(resolvedId)}`);
       const j = await r.json();
       if (!r.ok) { setErr(j.error || "Failed to fetch"); return; }
       const withTime = { ...j, fetchedAt: new Date().toISOString() };
       setResult(withTime);
       const s = initScore(withTime);
       setLiveH(s.h); setLiveA(s.a);
-      onSavePredictions?.(ptfId, withTime);
+      onSavePredictions?.(resolvedId, withTime);
 
       // Auto-apply: compute winners from actual score (or suggestedWinners) and push to form
       const scoreH = j.actualHome != null ? j.actualHome : null;
@@ -1351,9 +1461,14 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, o
             onChange={(e) => { setPtfId(e.target.value); setResult(null); setErr(""); }}
             onKeyDown={(e) => e.key === "Enter" && go()} />
         </div>
-        <button className="btn sm" onClick={go} disabled={!ptfId || loading}
+        <button className="btn sm" onClick={go} disabled={loading}
           style={{ marginBottom: 1 }}>{loading ? "…" : result ? "Refresh" : "Fetch"}</button>
       </div>
+      {autoDetected && (
+        <p style={{ fontSize: 11, color: "var(--chalk-dim)", marginTop: 4 }}>
+          Auto-detected: fixture #{autoDetected.id} · {autoDetected.homeTeam} vs {autoDetected.awayTeam}
+        </p>
+      )}
       {err && <p style={{ color: "var(--loss)", fontSize: 13, marginTop: 6 }}>{err}</p>}
       {result && (
         <div style={{ marginTop: 10 }}>
