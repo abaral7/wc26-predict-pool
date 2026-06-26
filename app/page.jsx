@@ -603,7 +603,18 @@ function MatchCard({ match, liveData, cachedPredictions, onSavePredictions, isAd
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  const cached = cachedPredictions?.[String(match.ptfFixtureId)];
+  // Try saved ptfFixtureId first; fall back to scanning by matchTitle for auto-detected IDs
+  const cached = useMemo(() => {
+    if (match.ptfFixtureId) {
+      const direct = cachedPredictions?.[String(match.ptfFixtureId)];
+      if (direct) return direct;
+    }
+    return Object.values(cachedPredictions || {}).find(p => {
+      if (!p?.matchTitle) return false;
+      const [h, a] = p.matchTitle.split(" v ");
+      return h && a && teamsMatch(h.trim(), match.home) && teamsMatch(a.trim(), match.away);
+    }) ?? null;
+  }, [cachedPredictions, match.ptfFixtureId, match.home, match.away]);
 
   const fetchAndSave = async () => {
     if (loading) return;
@@ -743,12 +754,13 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
         if (!poolMatch) continue;
         newMap[String(poolMatch.id)] = g;
 
-        // Resolve PTF fixture ID: saved on match or auto-detect from fixture map
-        let ptfId = poolMatch.ptfFixtureId ? String(poolMatch.ptfFixtureId) : null;
-        if (!ptfId && ptfFixtures?.length) {
+        // Always try team-name auto-find first; fall back to saved ptfFixtureId
+        let ptfId = null;
+        if (ptfFixtures?.length) {
           const found = findPtfFixture(ptfFixtures, poolMatch.home, poolMatch.away);
           if (found) ptfId = found.id;
         }
+        if (!ptfId && poolMatch.ptfFixtureId) ptfId = String(poolMatch.ptfFixtureId);
         if (ptfId) liveMatchPtfIds.push(ptfId);
       }
 
@@ -795,7 +807,16 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
     return () => clearInterval(id);
   }, [cooldownLeft > 0]);
 
-  useEffect(() => { fetchLive(); }, []);
+  // Always point to the latest fetchLive (avoids stale-closure in the interval below)
+  const fetchLiveRef = useRef(fetchLive);
+  fetchLiveRef.current = fetchLive;
+
+  // Fetch once on mount, then auto-refresh every 60 s
+  useEffect(() => {
+    fetchLiveRef.current();
+    const id = setInterval(() => fetchLiveRef.current(), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // Derive round label from match number (WC26: 72 group matches in 3 rounds of 24, then knockout)
   const getRoundKey = (m) => {
