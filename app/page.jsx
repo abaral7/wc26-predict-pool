@@ -1592,6 +1592,7 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
   const set = (k, v) => setC((x) => ({ ...x, [k]: v }));
   const [ptfEmail, setPtfUsername] = useState("");
   const [ptfPass, setPtfPass] = useState("");
+  const [ptfHasPassword, setPtfHasPassword] = useState(false);
   const [ptfStatus, setPtfStatus] = useState(""); // "" | "connecting" | "connected" | "error"
   const [ptfError, setPtfError] = useState("");
   const [ptfLoginAt, setPtfLoginAt] = useState(null);
@@ -1603,7 +1604,7 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
   useEffect(() => {
     fetch("/api/admin/ptf-credentials", { headers: { "x-admin-pin": adminPin } })
       .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) { setPtfUsername(d.username || ""); setPtfLoginAt(d.loginAt || null); } })
+      .then((d) => { if (d) { setPtfUsername(d.username || ""); setPtfHasPassword(!!d.hasPassword); setPtfLoginAt(d.loginAt || null); } })
       .catch(() => {});
   }, [adminPin]);
 
@@ -1679,11 +1680,17 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
         <label className="f">Email</label>
         <input type="email" value={ptfEmail} onChange={(e) => setPtfUsername(e.target.value)} placeholder="your@email.com" autoComplete="email" />
         <label className="f">Password</label>
-        <input type="password" value={ptfPass} onChange={(e) => setPtfPass(e.target.value)} placeholder="PTF password" autoComplete="current-password" />
+        <input
+          type="password"
+          value={ptfPass}
+          onChange={(e) => setPtfPass(e.target.value)}
+          placeholder={ptfHasPassword ? "••••••••  (saved — leave blank to keep)" : "PTF password"}
+          autoComplete="current-password"
+        />
         {ptfError && <p style={{ color: "#f87171", fontSize: 12, marginTop: 4 }}>{ptfError}</p>}
         <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-          <button className="btn" disabled={ptfStatus === "connecting" || !ptfEmail || !ptfPass} onClick={connectPtf}>
-            {ptfStatus === "connecting" ? "Connecting…" : ptfStatus === "connected" ? "✓ Connected" : "Connect PTF"}
+          <button className="btn" disabled={ptfStatus === "connecting" || !ptfEmail || (!ptfPass && !ptfHasPassword)} onClick={connectPtf}>
+            {ptfStatus === "connecting" ? "Connecting…" : ptfStatus === "connected" ? "✓ Connected" : ptfLoginAt ? "Reconnect PTF" : "Connect PTF"}
           </button>
           {ptfStatus === "connected" && (
             <span style={{ fontSize: 12, color: "var(--chalk-dim)" }}>Session saved — predictions will auto-refresh on expiry</span>

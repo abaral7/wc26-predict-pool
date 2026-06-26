@@ -16,9 +16,14 @@ export async function POST(req) {
   if (!process.env.ADMIN_PIN || pin !== process.env.ADMIN_PIN)
     return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const { username, password } = await req.json().catch(() => ({}));
-  if (!username || !password)
-    return Response.json({ error: "username and password required" }, { status: 400 });
+  let { username, password } = await req.json().catch(() => ({}));
+  if (!username) return Response.json({ error: "email is required" }, { status: 400 });
+  // If password left blank, fall back to the one already saved in Redis
+  if (!password) {
+    const saved = await getPtfCredentials().catch(() => null);
+    password = saved?.password || "";
+  }
+  if (!password) return Response.json({ error: "password is required" }, { status: 400 });
 
   const result = await doLogin(username, password);
   if (!result.ok) return Response.json({ error: result.error }, { status: 400 });

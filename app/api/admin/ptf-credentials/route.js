@@ -10,7 +10,13 @@ function authorized(req) {
 export async function GET(req) {
   if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
   const creds = await getPtfCredentials();
-  return Response.json({ session: creds?.session ?? "", csrf: creds?.csrf ?? "" });
+  return Response.json({
+    session:     creds?.session  ?? "",
+    csrf:        creds?.csrf     ?? "",
+    username:    creds?.username ?? "",
+    hasPassword: !!(creds?.password),
+    loginAt:     creds?.loginAt  ?? null,
+  });
 }
 
 export async function PUT(req) {

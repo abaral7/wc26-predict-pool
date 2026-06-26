@@ -154,8 +154,12 @@ export async function GET(req) {
 
   let r = await fetchWithCookie(cookie);
 
-  // If redirected to login (session expired), auto-refresh and retry once
-  if (r.status === 401 || r.redirected || r.url?.includes("site/login")) {
+  // PTF returns 403 "Login Required" when session expires (not 401 or a redirect).
+  // Also guard against actual redirects to /site/login just in case.
+  const isAuthFailure = (res) =>
+    res.status === 403 || res.status === 401 || res.redirected || res.url?.includes("site/login");
+
+  if (isAuthFailure(r)) {
     const refreshed = await refreshSession(creds);
     if (refreshed) {
       cookie = makeCookie(refreshed);
