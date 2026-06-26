@@ -797,21 +797,82 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
 
   useEffect(() => { fetchLive(); }, []);
 
-  const groups = { group: [], knockout: [] };
-  [...data.matches].sort((a, b) => a.num - b.num).forEach((m) => groups[m.stage]?.push(m));
-  const Section = ({ title, list, fee, pot }) => (
-    <section style={{ marginBottom: 22 }}>
-      <h2 className="disp" style={{ fontSize: 16, textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px", color: "var(--chalk-dim)" }}>
-        {title} <span className="mono" style={{ fontSize: 12 }}>· Rs {fee}/entry · pot {rs0(pot)}</span>
-      </h2>
-      {list.length === 0 && <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No results entered yet.</p>}
-      {list.map((m) => (
-        <MatchCard key={m.id} match={m} liveData={liveMap[String(m.id)]}
-          cachedPredictions={data.ptfPredictions} onSavePredictions={onSavePredictions}
-          isAdmin={isAdmin} onEdit={onEdit} />
-      ))}
-    </section>
-  );
+  // Derive round label from match number (WC26: 72 group matches in 3 rounds of 24, then knockout)
+  const getRoundKey = (m) => {
+    if (m.stage === "group") {
+      if (m.num <= 24) return { key: "gs1", label: "Group Stage — Round 1", fee: data.config.groupFee, pot: calc.groupPot };
+      if (m.num <= 48) return { key: "gs2", label: "Group Stage — Round 2", fee: data.config.groupFee, pot: calc.groupPot };
+      return                { key: "gs3", label: "Group Stage — Round 3", fee: data.config.groupFee, pot: calc.groupPot };
+    }
+    if (m.num <= 88)  return { key: "r32", label: "Round of 32",    fee: data.config.knockoutFee, pot: calc.koPot };
+    if (m.num <= 96)  return { key: "r16", label: "Round of 16",    fee: data.config.knockoutFee, pot: calc.koPot };
+    if (m.num <= 100) return { key: "qf",  label: "Quarter-finals", fee: data.config.knockoutFee, pot: calc.koPot };
+    if (m.num <= 102) return { key: "sf",  label: "Semi-finals",    fee: data.config.knockoutFee, pot: calc.koPot };
+    if (m.num === 103) return { key: "3p", label: "Third Place",    fee: data.config.knockoutFee, pot: calc.koPot };
+    return                    { key: "f",  label: "Final",          fee: data.config.knockoutFee, pot: calc.koPot };
+  };
+
+  // Build ordered round sections
+  const ROUND_ORDER = ["gs1", "gs2", "gs3", "r32", "r16", "qf", "sf", "3p", "f"];
+  const roundMap = {};
+  [...data.matches].sort((a, b) => a.num - b.num).forEach((m) => {
+    const r = getRoundKey(m);
+    if (!roundMap[r.key]) roundMap[r.key] = { ...r, matches: [] };
+    roundMap[r.key].matches.push(m);
+  });
+  const rounds = ROUND_ORDER.map(k => roundMap[k]).filter(Boolean);
+
+  // Default: collapse rounds where every match is already played
+  const [collapsed, setCollapsed] = useState(() => {
+    const init = {};
+    ROUND_ORDER.forEach(k => { init[k] = false; });
+    return init;
+  });
+
+  // After matches load, auto-collapse fully-played rounds (run once on mount)
+  useEffect(() => {
+    setCollapsed(prev => {
+      const next = { ...prev };
+      ROUND_ORDER.forEach(k => {
+        const r = roundMap[k];
+        if (r && r.matches.length > 0 && r.matches.every(m => m.played)) next[k] = true;
+      });
+      return next;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggle = (key) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const RoundSection = ({ round }) => {
+    const isOpen = !collapsed[round.key];
+    const playedCount = round.matches.filter(m => m.played).length;
+    const total = round.matches.length;
+    const hasLive = round.matches.some(m => liveMap[String(m.id)]);
+    return (
+      <section style={{ marginBottom: 10 }}>
+        <button
+          onClick={() => toggle(round.key)}
+          style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", padding: "8px 0", cursor: "pointer", textAlign: "left" }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--chalk-dim)", flex: 1 }}>
+            {hasLive && <span style={{ color: "var(--grass)", marginRight: 6 }}>⚡</span>}
+            {round.label}
+          </span>
+          <span className="mono" style={{ fontSize: 11, color: "var(--chalk-dim)" }}>
+            {playedCount}/{total} · Rs {round.fee}/entry
+          </span>
+          <span style={{ color: "var(--chalk-dim)", fontSize: 12, marginLeft: 4 }}>{isOpen ? "▲" : "▼"}</span>
+        </button>
+        <div style={{ height: 1, background: "var(--line)", marginBottom: isOpen ? 10 : 0 }} />
+        {isOpen && round.matches.map((m) => (
+          <MatchCard key={m.id} match={m} liveData={liveMap[String(m.id)]}
+            cachedPredictions={data.ptfPredictions} onSavePredictions={onSavePredictions}
+            isAdmin={isAdmin} onEdit={onEdit} />
+        ))}
+      </section>
+    );
+  };
+
   return (
     <>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
@@ -819,8 +880,7 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
           {liveLoading ? "Refreshing…" : cooldownLeft > 0 ? `Refresh in ${cooldownLeft}s` : "⚡ Refresh live scores"}
         </button>
       </div>
-      <Section title="Group stage" list={groups.group} fee={data.config.groupFee} pot={calc.groupPot} />
-      <Section title="Knockout stage" list={groups.knockout} fee={data.config.knockoutFee} pot={calc.koPot} />
+      {rounds.map(r => <RoundSection key={r.key} round={r} />)}
     </>
   );
 }
