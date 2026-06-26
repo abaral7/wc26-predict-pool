@@ -1396,11 +1396,16 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
   );
 }
 
-// Normalize a team name for fuzzy comparison (lowercase, letters/digits only)
+// Canonical aliases for teams whose names differ between our pool and PTF
+const TEAM_ALIASES = {
+  czechrepublic: "czech", czechia: "czech",
+  congodr: "congo",       drcongo: "congo",
+  unitedstates: "usa",
+};
 function normTeam(s) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const n = (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return TEAM_ALIASES[n] ?? n;
 }
-// Returns true if two team names are likely the same (substring match after normalization)
 function teamsMatch(a, b) {
   const na = normTeam(a), nb = normTeam(b);
   return na === nb || na.includes(nb) || nb.includes(na);
