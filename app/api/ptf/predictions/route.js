@@ -12,25 +12,39 @@
 // }
 // Add ?raw=1 to get the raw HTML for inspecting the structure.
 
-import { getPtfCredentials } from "@/lib/db";
+import { getPtfCredentials, setPtfCredentials } from "@/lib/db";
+import { doLogin } from "@/app/api/ptf/login/route";
 
 export const dynamic = "force-dynamic";
 
-async function buildCookie() {
+async function getCredentials() {
   // DB credentials (admin Settings) take priority over env vars.
-  let session, csrf;
-  try {
-    const creds = await getPtfCredentials();
-    session = creds?.session;
-    csrf    = creds?.csrf;
-  } catch {}
-  // Fall back to env vars if DB has nothing.
-  if (!session) session = process.env.PTF_SESSION;
-  if (!csrf)    csrf    = process.env.PTF_CSRF;
+  let creds = {};
+  try { creds = await getPtfCredentials(); } catch {}
+  return {
+    session: creds?.session || process.env.PTF_SESSION || "",
+    csrf:    creds?.csrf    || process.env.PTF_CSRF    || "",
+    username: creds?.username || "",
+    password: creds?.password || "",
+  };
+}
+
+function makeCookie({ session, csrf }) {
   const parts = [];
   if (session) parts.push(`PHPSESSID=${session}`);
   if (csrf)    parts.push(`YII_CSRF_TOKEN=${csrf}`);
   return parts.join("; ");
+}
+
+async function refreshSession(creds) {
+  if (!creds.username || !creds.password) return null;
+  try {
+    const result = await doLogin(creds.username, creds.password);
+    if (!result.ok) return null;
+    const updated = { ...creds, session: result.session, csrf: result.csrf, loginAt: new Date().toISOString() };
+    await setPtfCredentials(updated);
+    return updated;
+  } catch { return null; }
 }
 
 function parseHtml(html) {
@@ -116,19 +130,20 @@ export async function GET(req) {
     return Response.json({ error: "PTF_LEAGUE_ID env var is not set" }, { status: 500 });
   }
 
-  const cookie = await buildCookie();
+  let creds = await getCredentials();
+  let cookie = makeCookie(creds);
   if (!cookie) {
     return Response.json({
-      error: "PTF credentials not configured — add PHPSESSID and YII_CSRF_TOKEN in admin Settings → PTF Integration",
+      error: "PTF credentials not configured — connect your PTF account in admin Settings → PTF Integration",
     }, { status: 500 });
   }
 
   const leagueId = process.env.PTF_LEAGUE_ID;
   const url = `https://worldcup.predictthefootball.com/minileague/predictions/${leagueId}?fixtureid=${fixtureid}`;
 
-  const r = await fetch(url, {
+  const fetchWithCookie = (c) => fetch(url, {
     headers: {
-      cookie,
+      cookie: c,
       "x-requested-with": "XMLHttpRequest",
       accept:              "text/html, */*; q=0.01",
       referer:             `https://worldcup.predictthefootball.com/minileague/predictions/${leagueId}`,
@@ -136,6 +151,17 @@ export async function GET(req) {
     },
     cache: "no-store",
   });
+
+  let r = await fetchWithCookie(cookie);
+
+  // If redirected to login (session expired), auto-refresh and retry once
+  if (r.status === 401 || r.redirected || r.url?.includes("site/login")) {
+    const refreshed = await refreshSession(creds);
+    if (refreshed) {
+      cookie = makeCookie(refreshed);
+      r = await fetchWithCookie(cookie);
+    }
+  }
 
   if (!r.ok) {
     return Response.json({ error: `PTF returned HTTP ${r.status}` }, { status: r.status });

@@ -1415,9 +1415,11 @@ function PtfPredictionsPanel({ fixture, eligible, onApplyWinners, onApplyRule, o
 function SettingsModal({ data, onClose, onSave, adminPin }) {
   const [c, setC] = useState({ ...data.config });
   const set = (k, v) => setC((x) => ({ ...x, [k]: v }));
-  const [ptfSession, setPtfSession] = useState("");
-  const [ptfCsrf, setPtfCsrf] = useState("");
-  const [ptfStatus, setPtfStatus] = useState(""); // "" | "saving" | "saved" | "error"
+  const [ptfEmail, setPtfUsername] = useState("");
+  const [ptfPass, setPtfPass] = useState("");
+  const [ptfStatus, setPtfStatus] = useState(""); // "" | "connecting" | "connected" | "error"
+  const [ptfError, setPtfError] = useState("");
+  const [ptfLoginAt, setPtfLoginAt] = useState(null);
   const [wc26Email, setWc26Email] = useState("");
   const [wc26Pass, setWc26Pass] = useState("");
   const [wc26Status, setWc26Status] = useState(""); // "" | "connecting" | "connected" | "error"
@@ -1426,9 +1428,30 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
   useEffect(() => {
     fetch("/api/admin/ptf-credentials", { headers: { "x-admin-pin": adminPin } })
       .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) { setPtfSession(d.session); setPtfCsrf(d.csrf); } })
+      .then((d) => { if (d) { setPtfUsername(d.username || ""); setPtfLoginAt(d.loginAt || null); } })
       .catch(() => {});
   }, [adminPin]);
+
+  const connectPtf = async () => {
+    setPtfStatus("connecting");
+    setPtfError("");
+    try {
+      const r = await fetch("/api/ptf/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-pin": adminPin },
+        body: JSON.stringify({ username: ptfEmail, password: ptfPass }), // API still calls it username internally
+      });
+      if (r.ok) {
+        setPtfStatus("connected");
+        setPtfLoginAt(new Date().toISOString());
+        setPtfPass("");
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setPtfError(d.error || "Login failed");
+        setPtfStatus("error");
+      }
+    } catch { setPtfStatus("error"); setPtfError("Network error"); }
+  };
 
   const connectWc26 = async () => {
     setWc26Status("connecting");
@@ -1448,19 +1471,6 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
         setWc26Status("error");
       }
     } catch { setWc26Status("error"); setWc26Error("Network error"); }
-  };
-
-  const savePtf = async () => {
-    setPtfStatus("saving");
-    try {
-      const r = await fetch("/api/admin/ptf-credentials", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-admin-pin": adminPin },
-        body: JSON.stringify({ session: ptfSession, csrf: ptfCsrf }),
-      });
-      setPtfStatus(r.ok ? "saved" : "error");
-      setTimeout(() => setPtfStatus(""), 2000);
-    } catch { setPtfStatus("error"); }
   };
 
   return (
@@ -1483,18 +1493,26 @@ function SettingsModal({ data, onClose, onSave, adminPin }) {
       <div style={{ marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>PTF Integration</div>
         <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginBottom: 8, lineHeight: 1.5 }}>
-          Log in to <b style={{ color: "var(--chalk)" }}>worldcup.predictthefootball.com</b>, open DevTools → Network,
-          click any /minileague request, and copy the cookie values below.
-          Sessions expire — re-paste after each login.
+          Enter your <b style={{ color: "var(--chalk)" }}>predict.football</b> credentials.
+          Sessions are obtained and refreshed automatically — no cookie copying needed.
         </p>
-        <label className="f">PHPSESSID</label>
-        <input value={ptfSession} onChange={(e) => setPtfSession(e.target.value)} placeholder="Paste PHPSESSID value" />
-        <label className="f">YII_CSRF_TOKEN</label>
-        <input value={ptfCsrf} onChange={(e) => setPtfCsrf(e.target.value)} placeholder="Paste YII_CSRF_TOKEN value" />
-        <div style={{ marginTop: 10 }}>
-          <button className="btn" disabled={ptfStatus === "saving"} onClick={savePtf}>
-            {ptfStatus === "saving" ? "Saving…" : ptfStatus === "saved" ? "✓ Saved" : ptfStatus === "error" ? "Error — retry" : "Save PTF credentials"}
+        {ptfLoginAt && ptfStatus !== "connected" && (
+          <p style={{ fontSize: 11.5, color: "var(--grass)", marginBottom: 8 }}>
+            ✓ Last connected {new Date(ptfLoginAt).toLocaleString()}
+          </p>
+        )}
+        <label className="f">Email</label>
+        <input type="email" value={ptfEmail} onChange={(e) => setPtfUsername(e.target.value)} placeholder="your@email.com" autoComplete="email" />
+        <label className="f">Password</label>
+        <input type="password" value={ptfPass} onChange={(e) => setPtfPass(e.target.value)} placeholder="PTF password" autoComplete="current-password" />
+        {ptfError && <p style={{ color: "#f87171", fontSize: 12, marginTop: 4 }}>{ptfError}</p>}
+        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="btn" disabled={ptfStatus === "connecting" || !ptfEmail || !ptfPass} onClick={connectPtf}>
+            {ptfStatus === "connecting" ? "Connecting…" : ptfStatus === "connected" ? "✓ Connected" : "Connect PTF"}
           </button>
+          {ptfStatus === "connected" && (
+            <span style={{ fontSize: 12, color: "var(--chalk-dim)" }}>Session saved — predictions will auto-refresh on expiry</span>
+          )}
         </div>
       </div>
       <div style={{ marginTop: 18, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
