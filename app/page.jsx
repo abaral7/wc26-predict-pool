@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { makeGroupStageMatches } from "@/lib/fixtures";
+import { makeGroupStageMatches, makeR32Matches } from "@/lib/fixtures";
 
 /* ============================================================
    WORLD CUP 2026 PREDICTION POOL — Next.js client UI
@@ -429,6 +429,13 @@ export default function WorldCupPool() {
               if (!fresh.length) { flash("All 72 group fixtures already imported"); return; }
               save({ ...data, matches: [...data.matches, ...fresh] });
               flash(`${fresh.length} fixtures imported`);
+            }}
+            onImportR32={() => {
+              const existing = new Set(data.matches.map((m) => m.num));
+              const fresh = makeR32Matches().filter((m) => !existing.has(m.num));
+              if (!fresh.length) { flash("All 16 Round of 32 fixtures already imported"); return; }
+              save({ ...data, matches: [...data.matches, ...fresh] });
+              flash(`${fresh.length} R32 fixtures imported`);
             }}
           />
         )}
@@ -907,13 +914,14 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
 }
 
 /* ---------- Fixtures (admin) ---------- */
-function FixturesTab({ data, onAdd, onEdit, onImport }) {
+function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32 }) {
   const fixtures = [...data.matches].filter((x) => !x.played).sort((a, b) => a.num - b.num);
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <button className="btn primary" onClick={onAdd}>+ Add fixture</button>
         <button className="btn" onClick={onImport}>Import 72 group fixtures</button>
+        <button className="btn" onClick={onImportR32}>Import 16 R32 fixtures</button>
       </div>
       {fixtures.length === 0 ? (
         <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No upcoming fixtures. Add them individually or import the group stage above.</p>
