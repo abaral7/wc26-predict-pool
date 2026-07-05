@@ -145,6 +145,8 @@ const css = `
   .wcp .rulecard b { color: var(--gold); }
   .wcp .prow { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(244,247,240,0.07); flex-wrap: wrap; }
   .wcp .prow .pname { flex: 1; min-width: 130px; font-weight: 600; font-size: 14px; }
+  .wcp .prow input.pname { border: 1px solid rgba(244,247,240,0.15); border-radius: 4px; padding: 3px 6px; background: rgba(244,247,240,0.04); color: inherit; }
+  .wcp .prow input.pname:focus { border-color: var(--gold); }
   .wcp .prow select { width: auto; padding: 6px 8px; font-size: 12.5px; }
   @media (prefers-reduced-motion: no-preference) {
     .wcp .match, .wcp .card { transition: border-color .15s; }
@@ -501,8 +503,8 @@ export default function WorldCupPool() {
       {modal?.type === "participants" && (
         <ParticipantsModal data={data} config={config}
           onClose={() => setModal(null)}
-          onSave={(participants, payments) => {
-            save({ ...data, participants, payments });
+          onSave={(participants, payments, matches) => {
+            save({ ...data, participants, payments, matches });
             flash("Participants updated");
           }} />
       )}
@@ -1290,7 +1292,7 @@ function parseParticipantsCsv(text) {
 
 /* ---------- Participants manager (admin) ---------- */
 function ParticipantsModal({ data, config, onClose, onSave }) {
-  const [list, setList] = useState(data.participants.map((p) => ({ ...p })));
+  const [list, setList] = useState(data.participants.map((p) => ({ ...p, _origName: p.name })));
   const [payments, setPayments] = useState({ ...(data.payments || {}) });
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState("full");
@@ -1308,7 +1310,7 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
     const name = newName.trim();
     if (!name) return;
     if (list.some((p) => p.name.toLowerCase() === name.toLowerCase())) return;
-    setList([...list, { name, type: newType }]);
+    setList([...list, { name, type: newType, _origName: name }]);
     setNewName("");
   };
 
@@ -1328,7 +1330,7 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
       rows.forEach(({ name, type, paid }) => {
         const i = nextList.findIndex((p) => p.name.toLowerCase() === name.toLowerCase());
         if (i >= 0) { nextList[i] = { ...nextList[i], type }; updated++; }
-        else { nextList.push({ name, type }); added++; }
+        else { nextList.push({ name, type, _origName: name }); added++; }
         nextPay[name] = { ...(nextPay[name] || {}), entryPaid: paid };
       });
       setList(nextList);
@@ -1399,32 +1401,46 @@ function ParticipantsModal({ data, config, onClose, onSave }) {
             return 0;
           })
           .map((p) => (
-            <div className="prow" key={p.name}>
-              <span className="pname">{p.name}</span>
+            <div className="prow" key={p._origName}>
+              <input className="pname" value={p.name}
+                onChange={(e) => setList(list.map((x) => x._origName === p._origName ? { ...x, name: e.target.value } : x))} />
               <select value={p.type}
-                onChange={(e) => setList(list.map((x) => x.name === p.name ? { ...x, type: e.target.value } : x))}>
+                onChange={(e) => setList(list.map((x) => x._origName === p._origName ? { ...x, type: e.target.value } : x))}>
                 {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
               </select>
               <span className="mono" style={{ fontSize: 12, color: "var(--chalk-dim)", minWidth: 72, textAlign: "right" }}>
                 {rs0(entryFor(p, config))}
               </span>
-              <button className="btn sm" style={payments[p.name]?.entryPaid ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
-                onClick={() => togglePaid(p.name)}>
-                {payments[p.name]?.entryPaid ? "✓ Paid" : "Unpaid"}
+              <button className="btn sm" style={payments[p._origName]?.entryPaid ? { borderColor: "var(--grass)", color: "var(--grass)" } : {}}
+                onClick={() => togglePaid(p._origName)}>
+                {payments[p._origName]?.entryPaid ? "✓ Paid" : "Unpaid"}
               </button>
-              {removing === p.name ? (
-                <button className="btn sm danger" onClick={() => { setList(list.filter((x) => x.name !== p.name)); setRemoving(null); }}>
-                  Confirm{hasWins(p.name) ? " (has wins!)" : ""}
+              {removing === p._origName ? (
+                <button className="btn sm danger" onClick={() => { setList(list.filter((x) => x._origName !== p._origName)); setRemoving(null); }}>
+                  Confirm{hasWins(p._origName) ? " (has wins!)" : ""}
                 </button>
               ) : (
-                <button className="btn sm danger" onClick={() => setRemoving(p.name)}>✕</button>
+                <button className="btn sm danger" onClick={() => setRemoving(p._origName)}>✕</button>
               )}
             </div>
           ))}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-        <button className="btn primary" onClick={() => onSave(list, payments)}>Save changes</button>
+        <button className="btn primary" onClick={() => {
+          const renames = Object.fromEntries(
+            list.filter(p => p._origName !== p.name && p._origName).map(p => [p._origName, p.name])
+          );
+          const cleanParticipants = list.map(({ _origName, ...p }) => p);
+          const newPayments = Object.fromEntries(
+            Object.entries(payments).map(([k, v]) => [renames[k] ?? k, v])
+          );
+          const newMatches = data.matches.map(m => ({
+            ...m,
+            winners: (m.winners || []).map(n => renames[n] ?? n),
+          }));
+          onSave(cleanParticipants, newPayments, newMatches);
+        }}>Save changes</button>
       </div>
       <p style={{ fontSize: 11.5, color: "var(--chalk-dim)", marginTop: 10 }}>
         Changing types changes match pots for every match in that stage. Removing someone with recorded wins will redistribute past prizes — avoid unless correcting a mistake.
