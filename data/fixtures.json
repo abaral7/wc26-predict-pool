@@ -1420,6 +1420,62 @@
       "scoreAway": "",
       "rule": "Rule 1",
       "winners": []
+    },
+    {
+      "id": "wc26-qf-97",
+      "num": 97,
+      "stage": "knockout",
+      "group": "QF",
+      "date": "Jul 9, 2026",
+      "home": "Morocco",
+      "away": "France",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
+    },
+    {
+      "id": "wc26-qf-98",
+      "num": 98,
+      "stage": "knockout",
+      "group": "QF",
+      "date": "Jul 11, 2026",
+      "home": "Norway",
+      "away": "England",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
+    },
+    {
+      "id": "wc26-qf-99",
+      "num": 99,
+      "stage": "knockout",
+      "group": "QF",
+      "date": "Jul 10, 2026",
+      "home": "Spain",
+      "away": "Belgium",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
+    },
+    {
+      "id": "wc26-qf-100",
+      "num": 100,
+      "stage": "knockout",
+      "group": "QF",
+      "date": "Jul 11, 2026",
+      "home": "Argentina",
+      "away": "Switzerland",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
     }
   ]
 }

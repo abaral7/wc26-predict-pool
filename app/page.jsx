@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { makeGroupStageMatches, makeR32Matches, makeR16Matches } from "@/lib/fixtures";
+import { makeGroupStageMatches, makeR32Matches, makeR16Matches, makeQFMatches } from "@/lib/fixtures";
 
 /* ============================================================
    WORLD CUP 2026 PREDICTION POOL — Next.js client UI
@@ -145,8 +145,9 @@ const css = `
   .wcp .rulecard b { color: var(--gold); }
   .wcp .prow { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(244,247,240,0.07); flex-wrap: wrap; }
   .wcp .prow .pname { flex: 1; min-width: 130px; font-weight: 600; font-size: 14px; }
-  .wcp .prow input.pname { border: 1px solid rgba(244,247,240,0.15); border-radius: 4px; padding: 3px 6px; background: rgba(244,247,240,0.04); color: inherit; }
-  .wcp .prow input.pname:focus { border-color: var(--gold); }
+  .wcp .prow input.pname { border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; background: #0a1d14; color: inherit; outline: none; }
+  .wcp .prow input.pname:hover { border-color: rgba(244,247,240,0.4); }
+  .wcp .prow input.pname:focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(233,198,63,0.15); }
   .wcp .prow select { width: auto; padding: 6px 8px; font-size: 12.5px; }
   @media (prefers-reduced-motion: no-preference) {
     .wcp .match, .wcp .card { transition: border-color .15s; }
@@ -445,6 +446,13 @@ export default function WorldCupPool() {
               if (!fresh.length) { flash("All 8 Round of 16 fixtures already imported"); return; }
               save({ ...data, matches: [...data.matches, ...fresh] });
               flash(`${fresh.length} R16 fixtures imported`);
+            }}
+            onImportQF={() => {
+              const existing = new Set(data.matches.map((m) => m.num));
+              const fresh = makeQFMatches().filter((m) => !existing.has(m.num));
+              if (!fresh.length) { flash("All 4 Quarter-final fixtures already imported"); return; }
+              save({ ...data, matches: [...data.matches, ...fresh] });
+              flash(`${fresh.length} QF fixtures imported`);
             }}
           />
         )}
@@ -923,7 +931,7 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
 }
 
 /* ---------- Fixtures (admin) ---------- */
-function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16 }) {
+function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16, onImportQF }) {
   const fixtures = [...data.matches].filter((x) => !x.played).sort((a, b) => a.num - b.num);
   return (
     <>
@@ -932,6 +940,7 @@ function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16 }
         <button className="btn" onClick={onImport}>Import 72 group fixtures</button>
         <button className="btn" onClick={onImportR32}>Import 16 R32 fixtures</button>
         <button className="btn" onClick={onImportR16}>Import 8 R16 fixtures</button>
+        <button className="btn" onClick={onImportQF}>Import 4 QF fixtures</button>
       </div>
       {fixtures.length === 0 ? (
         <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No upcoming fixtures. Add them individually or import the group stage above.</p>
