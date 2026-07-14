@@ -1476,6 +1476,34 @@
       "scoreAway": "",
       "rule": "Rule 1",
       "winners": []
+    },
+    {
+      "id": "wc26-sf-101",
+      "num": 101,
+      "stage": "knockout",
+      "group": "SF",
+      "date": "Jul 14, 2026",
+      "home": "France",
+      "away": "Spain",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
+    },
+    {
+      "id": "wc26-sf-102",
+      "num": 102,
+      "stage": "knockout",
+      "group": "SF",
+      "date": "Jul 15, 2026",
+      "home": "England",
+      "away": "Argentina",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
     }
   ]
 }

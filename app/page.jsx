@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { makeGroupStageMatches, makeR32Matches, makeR16Matches, makeQFMatches } from "@/lib/fixtures";
+import { makeGroupStageMatches, makeR32Matches, makeR16Matches, makeQFMatches, makeSFMatches } from "@/lib/fixtures";
 
 /* ============================================================
    WORLD CUP 2026 PREDICTION POOL — Next.js client UI
@@ -453,6 +453,13 @@ export default function WorldCupPool() {
               if (!fresh.length) { flash("All 4 Quarter-final fixtures already imported"); return; }
               save({ ...data, matches: [...data.matches, ...fresh] });
               flash(`${fresh.length} QF fixtures imported`);
+            }}
+            onImportSF={() => {
+              const existing = new Set(data.matches.map((m) => m.num));
+              const fresh = makeSFMatches().filter((m) => !existing.has(m.num));
+              if (!fresh.length) { flash("All 2 Semi-final fixtures already imported"); return; }
+              save({ ...data, matches: [...data.matches, ...fresh] });
+              flash(`${fresh.length} SF fixtures imported`);
             }}
           />
         )}
@@ -931,7 +938,7 @@ function Matches({ data, calc, isAdmin, onEdit, onSavePredictions, onBatchSavePr
 }
 
 /* ---------- Fixtures (admin) ---------- */
-function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16, onImportQF }) {
+function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16, onImportQF, onImportSF }) {
   const fixtures = [...data.matches].filter((x) => !x.played).sort((a, b) => a.num - b.num);
   return (
     <>
@@ -941,6 +948,7 @@ function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16, 
         <button className="btn" onClick={onImportR32}>Import 16 R32 fixtures</button>
         <button className="btn" onClick={onImportR16}>Import 8 R16 fixtures</button>
         <button className="btn" onClick={onImportQF}>Import 4 QF fixtures</button>
+        <button className="btn" onClick={onImportSF}>Import 2 SF fixtures</button>
       </div>
       {fixtures.length === 0 ? (
         <p style={{ fontSize: 13, color: "var(--chalk-dim)" }}>No upcoming fixtures. Add them individually or import the group stage above.</p>
