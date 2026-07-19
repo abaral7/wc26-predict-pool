@@ -1504,6 +1504,34 @@
       "scoreAway": "",
       "rule": "Rule 1",
       "winners": []
+    },
+    {
+      "id": "wc26-3p-103",
+      "num": 103,
+      "stage": "knockout",
+      "group": "3P",
+      "date": "Jul 18, 2026",
+      "home": "France",
+      "away": "England",
+      "played": true,
+      "scoreHome": "4",
+      "scoreAway": "6",
+      "rule": "Rule 1",
+      "winners": []
+    },
+    {
+      "id": "wc26-f-104",
+      "num": 104,
+      "stage": "knockout",
+      "group": "F",
+      "date": "Jul 19, 2026",
+      "home": "Spain",
+      "away": "Argentina",
+      "played": false,
+      "scoreHome": "",
+      "scoreAway": "",
+      "rule": "Rule 1",
+      "winners": []
     }
   ]
 }
