@@ -399,7 +399,7 @@ export default function WorldCupPool() {
           </div>
         </div>
         <nav className="tabs" aria-label="Sections">
-          {[["standings", "Standings"], ["matches", "Matches"], ["money", "Money"], ["rules", "Rules"], ...(isAdmin ? [["fixtures", "Fixtures"]] : [])].map(([k, label]) => (
+          {[["standings", "Standings"], ["matches", "Matches"], ["money", "Money"], ["rules", "Rules"], ...(isAdmin ? [["fixtures", "Fixtures"], ["verify", "Verify"]] : [])].map(([k, label]) => (
             <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
           ))}
         </nav>
@@ -474,6 +474,20 @@ export default function WorldCupPool() {
               if (!fresh.length) { flash("Final fixture already imported"); return; }
               save({ ...data, matches: [...data.matches, ...fresh] });
               flash("Final fixture imported");
+            }}
+          />
+        )}
+        {tab === "verify" && isAdmin && (
+          <VerifyTab
+            data={data}
+            onVerify={(matchNum) => {
+              const matches = data.matches.map((m) => m.num === matchNum ? { ...m, verified: true } : m);
+              save({ ...data, matches });
+              flash("Match marked as verified");
+            }}
+            onUnverify={(matchNum) => {
+              const matches = data.matches.map((m) => m.num === matchNum ? { ...m, verified: false } : m);
+              save({ ...data, matches });
             }}
           />
         )}
@@ -1014,6 +1028,147 @@ function FixturesTab({ data, onAdd, onEdit, onImport, onImportR32, onImportR16, 
         </div>
       )}
     </>
+  );
+}
+
+/* ---------- Verify (admin) ---------- */
+function VerifyTab({ data, onVerify, onUnverify }) {
+  const played = [...data.matches].filter((m) => m.played).sort((a, b) => a.num - b.num);
+  const ptfCache = data.ptfPredictions || {};
+
+  // Find cached PTF data for a match by scanning matchTitle
+  function findCached(match) {
+    const direct = match.ptfFixtureId ? ptfCache[String(match.ptfFixtureId)] : null;
+    if (direct) return direct;
+    return Object.values(ptfCache).find((p) => {
+      const t = (p.matchTitle || "").toLowerCase();
+      return teamsMatch(t.split(/\s+v\s+/i)[0]?.trim() || "", match.home) &&
+             teamsMatch(t.split(/\s+v\s+/i)[1]?.trim() || "", match.away);
+    }) ?? null;
+  }
+
+  const eligible = (match) =>
+    data.participants.filter(match.stage === "group" ? inGroup : inKO);
+
+  function qualifiedNames(match, cached) {
+    if (!cached?.predictions?.length) return null;
+    const aH = parseInt(match.scoreHome, 10), aA = parseInt(match.scoreAway, 10);
+    if (isNaN(aH) || isNaN(aA)) return null;
+    const winners = computeWinners(cached.predictions, aH, aA);
+    if (!winners) return { rule: null, names: [] };
+    const pool = eligible(match);
+    const matched = pool.filter((p) =>
+      winners.names.some((n) =>
+        n.toLowerCase().includes(p.name.toLowerCase()) ||
+        p.name.toLowerCase().includes(n.toLowerCase())
+      )
+    ).map((p) => p.name);
+    return { rule: winners.rule, names: matched, ptfNames: winners.names };
+  }
+
+  const needsReviewCount = played.filter((m) => {
+    if (m.verified) return false;
+    const cached = findCached(m);
+    const q = qualifiedNames(m, cached);
+    if (!q) return false;
+    const appSet = new Set(m.winners || []);
+    const qualSet = new Set(q.names);
+    return [...appSet].some((n) => !qualSet.has(n)) || [...qualSet].some((n) => !appSet.has(n));
+  }).length;
+
+  const verifiedCount = played.filter((m) => m.verified).length;
+
+  const RULE_LABELS = { 1: "Rule 1 — Exact score", 2: "Rule 2 — Goal difference", 3: "Rule 3 — Correct team", 4: "Rule 4 — No one predicted draw" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <div className="card stat" style={{ flex: "0 0 auto" }}>
+          <div className="k">Verified</div>
+          <div className="v mono" style={{ color: "var(--grass)" }}>{verifiedCount} / {played.length}</div>
+        </div>
+        <div className="card stat" style={{ flex: "0 0 auto" }}>
+          <div className="k">Needs review</div>
+          <div className="v mono" style={{ color: needsReviewCount ? "var(--gold)" : "var(--grass)" }}>{needsReviewCount}</div>
+        </div>
+      </div>
+
+      {played.map((match) => {
+        const cached = findCached(match);
+        const q = qualifiedNames(match, cached);
+        const appWinners = match.winners || [];
+        const appSet = new Set(appWinners);
+        const qualSet = new Set(q?.names || []);
+        const missingFromApp = q ? q.names.filter((n) => !appSet.has(n)) : [];
+        const extraInApp = appWinners.filter((n) => !qualSet.has(n));
+        const hasMismatch = missingFromApp.length > 0 || extraInApp.length > 0;
+        const needsReview = !match.verified && !!q && hasMismatch;
+        const noPtf = !cached;
+
+        const borderColor = match.verified ? "var(--grass)" : needsReview ? "var(--gold)" : "var(--line)";
+
+        return (
+          <div key={match.num} className="card" style={{ marginBottom: 12, borderLeft: `3px solid ${borderColor}`, padding: "14px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--chalk-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+                  Match {match.num} · {match.date}
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>
+                  {match.home} <span className="mono" style={{ color: "var(--gold)", margin: "0 6px" }}>{match.scoreHome} – {match.scoreAway}</span> {match.away}
+                </div>
+                {q && <div style={{ fontSize: 11, color: "var(--chalk-dim)", marginTop: 3 }}>{RULE_LABELS[q.rule] ?? "No winners"}</div>}
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {match.verified
+                  ? <><span style={{ fontSize: 12, color: "var(--grass)", fontWeight: 600 }}>✓ Verified</span>
+                      <button className="btn sm" onClick={() => onUnverify(match.num)}>Undo</button></>
+                  : <button className="btn primary sm" onClick={() => onVerify(match.num)}>Mark Verified</button>
+                }
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px 16px", fontSize: 12 }}>
+              {noPtf ? (
+                <div style={{ color: "var(--chalk-dim)", fontStyle: "italic" }}>No PTF data cached for this match</div>
+              ) : (
+                <>
+                  <div>
+                    <div style={{ color: "var(--chalk-dim)", marginBottom: 3, fontWeight: 600 }}>Correct PTF predictions</div>
+                    {q?.ptfNames?.length
+                      ? q.ptfNames.map((n) => <div key={n} style={{ color: "var(--chalk)" }}>{n}</div>)
+                      : <div style={{ color: "var(--chalk-dim)", fontStyle: "italic" }}>None</div>}
+                  </div>
+                  <div>
+                    <div style={{ color: "var(--chalk-dim)", marginBottom: 3, fontWeight: 600 }}>Qualified pool winners</div>
+                    {q?.names?.length
+                      ? q.names.map((n) => <div key={n} style={{ color: "var(--chalk)" }}>{n}</div>)
+                      : <div style={{ color: "var(--chalk-dim)", fontStyle: "italic" }}>None</div>}
+                  </div>
+                  <div>
+                    <div style={{ color: "var(--chalk-dim)", marginBottom: 3, fontWeight: 600 }}>App listed winners</div>
+                    {appWinners.length
+                      ? appWinners.map((n) => <div key={n} style={{ color: "var(--chalk)" }}>{n}</div>)
+                      : <div style={{ color: "var(--chalk-dim)", fontStyle: "italic" }}>None</div>}
+                  </div>
+                  {(missingFromApp.length > 0 || extraInApp.length > 0) && (
+                    <div>
+                      <div style={{ color: "var(--gold)", marginBottom: 3, fontWeight: 600 }}>⚠ Mismatch</div>
+                      {missingFromApp.map((n) => <div key={n} style={{ color: "var(--gold)" }}>+ missing: {n}</div>)}
+                      {extraInApp.map((n) => <div key={n} style={{ color: "#e07070" }}>– extra: {n}</div>)}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {played.length === 0 && (
+        <p style={{ color: "var(--chalk-dim)" }}>No played matches yet.</p>
+      )}
+    </div>
   );
 }
 
