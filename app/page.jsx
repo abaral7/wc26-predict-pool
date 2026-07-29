@@ -624,21 +624,22 @@ function Standings({ calc, config }) {
           <tfoot>
             {(() => {
               const rows = calc.rows;
+              const hasGroup = rows.some(inGroup);
+              const hasKO = rows.some(inKO);
               const totalWins = rows.reduce((s, r) => s + (r.wins || 0), 0);
               const totalGroup = rows.reduce((s, r) => s + (inGroup(r) ? (r.groupEarned || 0) : 0), 0);
               const totalKO = rows.reduce((s, r) => s + (inKO(r) ? (r.koEarned || 0) : 0), 0);
               const totalLeague = rows.reduce((s, r) => s + (r.type === "full" && r.leagueReturn ? (r.leagueReturn || 0) : 0), 0);
               const totalReturn = rows.reduce((s, r) => s + (r.finalReturn || 0), 0);
-              const totalNet = rows.reduce((s, r) => s + (r.netSoFar || 0), 0);
               return (
                 <tr style={{ borderTop: "2px solid var(--line)", fontWeight: 700 }}>
                   <td colSpan={3} style={{ fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--chalk-dim)" }}>Total</td>
                   <td className="num">{totalWins}</td>
-                  <td className="num">{rs(totalGroup)}</td>
-                  <td className="num">{rs(totalKO)}</td>
+                  <td className="num">{hasGroup ? rs(totalGroup) : "—"}</td>
+                  <td className="num">{hasKO ? rs(totalKO) : "—"}</td>
                   <td className="num">{config.leagueFinalized && totalLeague ? rs(totalLeague) : "—"}</td>
                   <td className="num">{rs(totalReturn)}</td>
-                  <td className={"num " + (totalNet >= 0 ? "pos" : "neg")}>{totalNet >= 0 ? "+" : ""}{rs(totalNet)}</td>
+                  <td className="num">—</td>
                 </tr>
               );
             })()}
